@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOFU Docs</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body data-page="docs" data-build="BUILD_VERSION">
+  <div class="site-shell">
+    <nav class="topbar compact">
+      <a class="brand" href="index.html">SOFU Report</a>
+      <div class="topbar-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="reports.html">Reports</a>
+        <a class="active" href="docs.html">Docs</a>
+        <a href="about.html">About</a>
+      </div>
+    </nav>
+
+    <main class="content-grid single-column docs-layout">
+      <section class="page-header">
+        <p class="eyebrow">Docs</p>
+        <h1>Calculations, percentiles, and provided variables</h1>
+        <p class="lead">
+          This page documents the current dashboard logic so we can keep iterating with a shared understanding
+          of where values come from, what is computed, and what still deserves caution.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span>Data modes</span>
+            <strong>Provided + computed</strong>
+            <span>FEMS/NFDRS values stay intact. Non-WIMS Synoptic and Zentra get computed enrichments where possible.</span>
+          </article>
+          <article class="metric-card">
+            <span>Primary summaries</span>
+            <strong>Daily stats</strong>
+            <span>Charts use daily min, mean, and max from the stats tables, with recent overlays where available.</span>
+          </article>
+          <article class="metric-card">
+            <span>Percentile basis</span>
+            <strong>Day of year</strong>
+            <span>Percentiles compare the selected daily value against historical daily values for the same calendar day.</span>
+          </article>
+          <article class="metric-card">
+            <span>Static delivery</span>
+            <strong>Build-time export</strong>
+            <span>The dashboard and reports are regenerated during the workflow run and served as static files.</span>
+          </article>
+          <article class="metric-card">
+            <span>Workflow help</span>
+            <strong><a href="workflows.html">Open command guide</a></strong>
+            <span>A quick reference for the Docker, DB, and local build commands used to debug the project.</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Source logic</p>
+        <h2>How values are chosen by source</h2>
+        <div class="docs-table-wrap">
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Uses provided values</th>
+                <th>Uses computed values</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>FEMS / RAWS</td>
+                <td>`gsi`, `kbdi`, weather, fuel-state style metrics</td>
+                <td>Generally none for `gsi` / `kbdi`</td>
+                <td>These values are treated as authoritative and are not overwritten by local calculations.</td>
+              </tr>
+              <tr>
+                <td>Non-WIMS Synoptic</td>
+                <td>Weather, soil moisture, some precip fields</td>
+                <td>`gsi`, `kbdi` when enough support data exists</td>
+                <td>Computed metrics are best thought of as proxies and should be cross-checked against nearby RAWS stations.</td>
+              </tr>
+              <tr>
+                <td>Zentra</td>
+                <td>Hourly weather and soil signals</td>
+                <td>`gsi`, `kbdi` where the station has enough temperature, humidity/VPD, precip, and site metadata</td>
+                <td>Zentra currently extends coverage, but not every derived metric should be interpreted as equivalent to NFDRS outputs.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Percentiles</p>
+        <h2>What the percentile cards and ribbons mean</h2>
+        <p>
+          Percentiles are built from the daily stats tables. For each station, variable, and day of year, we summarize
+          the historical daily minimum, mean, and maximum values and calculate percentile breakpoints such as
+          `P10`, `P25`, `P50`, `P75`, and `P90`.
+        </p>
+        <ul class="feature-list">
+          <li>The color bar shows where the selected day’s value lands relative to that station’s historical context.</li>
+          <li>The cards underneath show the current daily min, mean, and max beside key percentile thresholds.</li>
+          <li>The chart ribbons use percentile envelopes for the selected variable when enough history exists.</li>
+          <li>If no percentile context exists for a site-variable combination, the dashboard falls back to plain values without percentile styling.</li>
+        </ul>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Variables</p>
+        <h2>Variables currently surfaced in the dashboard</h2>
+        <div class="docs-variable-grid">
+          <article class="docs-variable-card">
+            <h3>Soil Moisture 1 / 2</h3>
+            <p>Primary soil moisture channels where available. Summary cards also show 14-day change and trend coloring.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>Air Temperature</h3>
+            <p>Daily and recent air temperature trends, plus percentile context when enough history exists.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>Humidity</h3>
+            <p>Relative humidity from FEMS, Synoptic, or Zentra daily stats, used both directly and inside some computed paths.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>Wind Speed</h3>
+            <p>Daily wind speed summaries, mainly for situational awareness rather than percentile-heavy interpretation.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>Precip Accum</h3>
+            <p>Source-specific accumulated precipitation field used where available. Semantics still differ across station families.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>Accumulated Precip</h3>
+            <p>Water-year cumulative precipitation derived during export for charting and percentile comparison.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>GSI</h3>
+            <p>Provided directly for WIMS/NFDRS stations; computed for non-WIMS Synoptic and Zentra when enough support variables exist.</p>
+          </article>
+          <article class="docs-variable-card">
+            <h3>KBDI</h3>
+            <p>Provided directly for WIMS/NFDRS stations; computed for non-WIMS Synoptic and Zentra using station precipitation normals plus daily temperature and precip.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Code notes</p>
+        <h2>Current calculation scaffolds</h2>
+        <p>
+          These are simplified snapshots of the logic currently used in the workflow. They are here to make review easier,
+          not to replace the source code.
+        </p>
+
+        <details class="docs-toggle" open>
+          <summary>Show `GSI` calculation overview</summary>
+          <div class="docs-code-wrap">
+            <pre><code>i_tmin  = clamp((-2C to 5C ramp using daily Tmin))
+i_vpd   = clamp((900 Pa to 4100 Pa ramp using daily VPD))
+i_photo = clamp((10h to 11h ramp using daylength))
+
+daily_gsi_proxy = i_tmin * i_vpd * i_photo
+gsi = trailing_running_mean(daily_gsi_proxy, 28 days)</code></pre>
+          </div>
+          <p class="docs-note">
+            For FEMS / RAWS we keep the provided `GSI`. For non-WIMS Synoptic and Zentra, this remains a calibrated proxy,
+            and nearby-station comparison is still part of QA.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Show `KBDI` calculation overview</summary>
+          <div class="docs-code-wrap">
+            <pre><code>inputs:
+  daily Tmax
+  daily precip
+  station mean annual precipitation (PRISM normal)
+
+stateful recurrence:
+  if rainfall &gt; 0.2 in:
+    reduce yesterday's KBDI
+
+  add drought factor as function of:
+    current KBDI
+    Tmax
+    annual precipitation normal
+
+  clamp result to [0, 800]</code></pre>
+          </div>
+          <p class="docs-note">
+            KBDI is only computed for non-WIMS Synoptic and Zentra where usable support inputs exist. If precip support is missing,
+            the workflow now prefers to skip the derived KBDI rather than emit obviously bad values.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Show percentile table logic</summary>
+          <div class="docs-code-wrap">
+            <pre><code>group by:
+  station_id
+  metric_name
+  day_of_year_key
+  stat_type (value_min / value_mean / value_max)
+
+from complete daily stats:
+  p05, p10, p25, p50, p75, p90, p95
+  n_years
+  min and max source dates</code></pre>
+          </div>
+          <p class="docs-note">
+            Percentiles are recomputed from the daily stats tables and refreshed incrementally after the initial backfill.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Show current caution list</summary>
+          <div class="docs-code-wrap">
+            <pre><code>- Precip field semantics are not uniform across all sources.
+- Computed GSI for non-WIMS / Zentra is a proxy, not a formal NFDRS replacement.
+- Computed KBDI depends heavily on usable daily precip support.
+- Variable coverage differs by station family and by site.</code></pre>
+          </div>
+        </details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,175 @@
+---
+title: "SOFU D3 Mock Report"
+output:
+  html_document:
+    toc: true
+    self_contained: false
+params:
+  db_path: !r Sys.getenv("SOFU_DB_PATH", "/data/sofu.sqlite")
+  days_back: 30
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(gt)
+library(glue)
+library(jsonlite)
+library(htmltools)
+library(lubridate)
+library(purrr)
+library(tibble)
+```
+
+```{r connect, include=FALSE}
+cat("Rmd db_path:", params$db_path, "\n")
+cat("DB exists?:", file.exists(params$db_path), "\n")
+stopifnot(file.exists(params$db_path))
+
+con <- DBI::dbConnect(RSQLite::SQLite(), params$db_path)
+cat("Connected from Rmd\n")
+cat("dbIsValid(con):", DBI::dbIsValid(con), "\n")
+print(DBI::dbGetInfo(con))
+
+tables <- DBI::dbListTables(con)
+start_date <- Sys.Date() - params$days_back
+end_date <- Sys.Date()
+```
+
+# Overview
+
+This is a non-self-contained mock report pulled from the SQLite database.
+
+- Rendered: `r format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")`
+- Database: `r params$db_path`
+- Window: last `r params$days_back` days
+
+## Zentracloud
+
+```{r, echo = F}
+
+# Reference the table without loading it yet
+remote_table <- tbl(con, "zentracloud_data")
+start_time <- as.numeric(as.POSIXct(
+  paste(Sys.Date() - params$days_back, "00:00:00"),
+  tz = "UTC"
+))
+# Filter and select a portion of data in the Zentra Cloud table within the sql
+df_subset <- remote_table %>%
+  filter(date >= !!start_time) %>%
+  collect()
+```
+
+
+```{r}
+#converting dates in df from unix timestamp to readable date-time objects
+df_subset <- df_subset %>%
+  mutate(date = as_datetime(date))
+
+#######
+# 1. Define your stations
+stations_to_pull <- c("z6-28071", " z6-28073", "z6-32392", "z6-32393", "z6-32483") 
+
+site_names <- c(
+  "z6-28071" = "Langhor",
+  "z6-28073" = "Hebgen",
+  "z6-32392" = "W. Bridger Cr",
+  "z6-32393" = "Whitetail",
+  "z6-32483" = "Bear Palmer")
+
+# 2. Define the summary function
+get_site_summary <- function(id) {
+  
+  # Filter data for this specific site
+  site_data <- df_subset %>% filter(station_id == id)
+  
+  if(nrow(site_data) == 0) return(NULL) # Skip if ID doesn't exist
+  
+  latest_date <- max(site_data$date, na.rm = TRUE)
+  cutoff_date <- latest_date - days(14)
+  
+  # Latest values
+  current <- site_data %>% filter(date == latest_date) %>% head(1)
+  
+  # 14-day-ago values
+  old <- site_data %>% filter(date >= cutoff_date) %>% arrange(date) %>% head(1)
+  
+  # Combine into a single row
+  tibble(
+    Site = ifelse(id %in% names(site_names), site_names[id], id),
+    `4" SM %` = current$port_2_teros_11_percent_water_content,
+    `4", 14-Day SM Change` = current$port_2_teros_11_percent_water_content - old$port_2_teros_11_percent_water_content,
+    `8" SM %` = current$port_3_teros_11_percent_water_content,
+    `8", 14-Day SM Change` = current$port_3_teros_11_percent_water_content - old$port_3_teros_11_percent_water_content
+  )
+}
+
+# 3. Run for all sites and stack rows
+final_table <- map_df(stations_to_pull, get_site_summary)
+
+############add acumulated precip
+
+precip_summary <- df_subset %>%
+  group_by(station_id) %>%
+  summarise(
+    total_precip = sum(
+        port_1_atmos_41_in_precipitation, 
+      na.rm = TRUE
+    )
+  )
+
+precip_summary <- precip_summary %>%
+  mutate(Site = site_names[station_id])
+```
+
+
+```{r}
+# Join to your main table
+final_table <- final_table %>%
+  left_join(
+    precip_summary %>% select(Site, total_precip), 
+    by = "Site"
+  )
+
+final_table %>%
+  gt() %>%
+  tab_header(title = "April 7, 2024: CGNF Soil Moisture Summary") %>%
+  
+  # Clean up the long precip column name for the table header
+  cols_label(total_precip = "14-Day Precip (in)") %>%
+  
+  # --- COLOR LOGIC ---
+  data_color(
+    columns = c(`4", 14-Day SM Change`, `8", 14-Day SM Change`),
+    fn = function(x) ifelse(x < 0, "red", "darkgreen"),
+    apply_to = "text"
+  ) %>%
+  
+  # Style the new Precip column
+  tab_style(
+    style = cell_text(color = "blue", weight = "bold"),
+    locations = cells_body(columns = total_precip)
+  ) %>%
+  
+  # Bold the SM Change columns
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(columns = c(`4", 14-Day SM Change`, `8", 14-Day SM Change`))
+  ) %>%
+  
+  fmt_number(columns = -Site, decimals = 2) %>%
+  cols_width(Site ~ px(150), everything() ~ px(100)) %>%
+  cols_align(align = "center", columns = -Site) %>%
+  opt_stylize(style = 6, color = "gray")
+
+
+
+```
+
+```{r cleanup, include=FALSE}
+if (exists("con") && DBI::dbIsValid(con)) {
+  DBI::dbDisconnect(con)
+}

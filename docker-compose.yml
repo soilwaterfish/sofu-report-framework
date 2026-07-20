@@ -1,0 +1,38 @@
+services:
+  sofureport-job:
+    build: .
+    user: "${UID}:${GID}"
+    volumes:
+      - ./data:/data
+      - ./output:/output
+      - ./logs:/logs
+      - ./sofureport:/app/sofureport:ro
+      - ./scripts:/app/scripts:ro
+      - ./web:/app/web:ro
+      - ./run_workflow.R:/app/run_workflow.R:ro
+      - ./build_static_site.R:/app/build_static_site.R:ro
+      - ./report_test.Rmd:/app/report_test.Rmd:ro
+      - ./secrets/.Renviron:/run/secrets/sofureport_renviron:ro
+    environment:
+      TZ: America/Denver
+      SOFU_DB_PATH: /data/sofu.sqlite
+      SOFU_GPKG_PATH: /data/cg_bbox.gpkg
+      SOFU_OUTPUT_DIR: /output
+      SOFU_OUTPUT_HTML: /output/latest/sofureport.html
+      SOFU_LOG_PATH: /logs/workflow.log
+      SOFU_TMP_DIR: /tmp/sofureport-render
+      SOFU_RENVIRON_PATH: /run/secrets/sofureport_renviron
+      SOFU_SKIP_REPORT_RENDER: "1"
+      SOFU_STAGE_PERCENTILES: "0"
+      SOFU_DAILY_STATS_LOOKBACK_DAYS: "14"
+      SOFU_PERCENTILES_LOOKBACK_DAYS: "30"
+    command: Rscript /app/run_workflow.R
+
+  sofureport-web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./output:/usr/share/nginx/sofureport:ro
+    restart: always

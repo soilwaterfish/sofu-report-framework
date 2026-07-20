@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOFU Reports</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body data-page="reports-index" data-build="BUILD_VERSION">
+  <div class="site-shell">
+    <nav class="topbar compact">
+      <a class="brand" href="index.html">SOFU Report</a>
+      <div class="topbar-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a class="active" href="reports.html">Reports</a>
+        <a href="docs.html">Docs</a>
+        <a href="about.html">About</a>
+      </div>
+    </nav>
+
+    <main class="content-grid single-column">
+      <section class="page-header">
+        <p class="eyebrow">Reports</p>
+        <h1>Zone Report Summaries</h1>
+        <p class="lead">
+          Zone report summaries are built from the latest available station records. It includes
+          24-hour, 2-day, 7-day, and 30-day precipitation totals and soil moisture gains/losses.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="metric-grid" id="reports-overview">
+          <article class="metric-card"><span>Loading</span><strong>…</strong><span>Reading zone summaries</span></article>
+        </div>
+      </section>
+
+      <section class="report-grid" id="reports-zone-grid"></section>
+    </main>
+  </div>
+
+  <script src="assets/reports.js"></script>
+</body>
+</html>

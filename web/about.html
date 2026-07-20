@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About SOFU Report</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body data-page="about" data-build="BUILD_VERSION">
+  <div class="site-shell">
+    <nav class="topbar compact">
+      <a class="brand" href="index.html">SOFU Report</a>
+      <div class="topbar-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="reports.html">Reports</a>
+        <a href="docs.html">Docs</a>
+        <a class="active" href="about.html">About</a>
+      </div>
+    </nav>
+
+    <main class="content-grid single-column">
+      <section class="info-card">
+        <p class="section-label">Architecture</p>
+        <h1>How this starter is put together</h1>
+        <p>
+          The workflow continues to render the main report from SQLite using R. A second build step exports
+          chart-friendly JSON and copies this static web shell into the output directory.
+        </p>
+        <p>
+          That gives you fast hosting options and low operational overhead now, while still leaving room to
+          graduate into a heavier frontend or backend later if we need live filters, auth, or richer APIs.
+        </p>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Current pages</p>
+        <ul class="feature-list">
+          <li>A welcome page for first impressions and high-level metrics.</li>
+          <li>A dashboard page with client-side interactive Plotly and Leaflet views.</li>
+          <li>A reports section with static domain pages generated from intersected geographies.</li>
+          <li>A docs page describing calculations, percentiles, and provided variables.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

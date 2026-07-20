@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOFU Report</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body data-page="home" data-build="BUILD_VERSION">
+  <div class="site-shell">
+    <header class="hero">
+      <nav class="topbar">
+        <a class="brand" href="index.html">SOFU Report</a>
+        <div class="topbar-links">
+          <a href="dashboard.html">Dashboard</a>
+          <a href="reports.html">Reports</a>
+          <a href="docs.html">Docs</a>
+          <a href="about.html">About</a>
+        </div>
+      </nav>
+
+      <div class="hero-grid">
+        <section class="hero-copy">
+          <p class="eyebrow">Static-first monitoring site</p>
+          <h1>Welcome to the soil moisture field briefing.</h1>
+          <p class="lead">
+            This site brings in data from multi sources to provide a quick analysis on fire/fuels related variables.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="dashboard.html">Open dashboard</a>
+            <a class="button button-secondary" href="reports.html">Browse reports</a>
+            <a class="button button-secondary" href="docs.html">Open docs</a>
+          </div>
+        </section>
+
+        <aside class="hero-panel landing-note">
+          <p class="panel-label">Regional conditions</p>
+          <h2>Watch drought signals move through the field area.</h2>
+          <p>
+            ForDRI and EDDI frames are cropped to the SOFU reporting boundary and published as static map assets.
+          </p>
+          <p class="landing-updated" data-landing-generated>Loading the most recent map sequence...</p>
+        </aside>
+      </div>
+    </header>
+
+    <main class="landing-main">
+      <section class="landing-index-grid" data-landing-index-grid aria-live="polite">
+        <article class="landing-index-empty panel">
+          <p class="panel-label">Drought outlooks</p>
+          <h2>Loading regional map sequences</h2>
+          <p>Static ForDRI and EDDI frames will appear here when the latest asset build is available.</p>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="assets/landing.js" defer></script>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

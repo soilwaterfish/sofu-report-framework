@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOFU Dashboard</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="assets/styles.css" />
+  <script src="assets/plotly.min.js"></script>
+</head>
+<body data-page="dashboard" data-build="BUILD_VERSION">
+  <div class="site-shell">
+    <nav class="topbar compact">
+      <a class="brand" href="index.html">SOFU Report</a>
+      <div class="topbar-links">
+        <a class="active" href="dashboard.html">Dashboard</a>
+        <a href="reports.html">Reports</a>
+        <a href="docs.html">Docs</a>
+        <a href="about.html">About</a>
+      </div>
+    </nav>
+
+    <main class="dashboard-layout" aria-busy="true">
+      <div id="dashboard-loading" class="dashboard-loading" role="status" aria-live="polite">
+        <span class="dashboard-spinner" aria-hidden="true"></span>
+        <div>
+          <strong>Loading station data</strong>
+          <span>Preparing the map, current readings, and charts.</span>
+        </div>
+      </div>
+      <section class="page-header">
+        <p class="eyebrow">Interactive graphs</p>
+        <h1>Station dashboard</h1>
+        <p class="lead">
+          Switch stations, change metrics, and inspect recent trends from the latest exported workflow data.
+        </p>
+      </section>
+
+      <section id="dashboard-overview" class="metric-grid"></section>
+
+      <section class="panel">
+        <div class="panel-top">
+          <div>
+            <p class="panel-label">Stations</p>
+            <h2>Choose a site</h2>
+          </div>
+          <div class="picker-wrap">
+            <label class="picker-label" for="station-picker">Station picker</label>
+            <select id="station-picker" class="station-picker" aria-label="Select a station"></select>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-split">
+        <section class="panel">
+          <div class="panel-top">
+            <div>
+              <p class="panel-label">Map view</p>
+              <h2>Station map</h2>
+            </div>
+            <div class="map-actions">
+              <p id="map-status" class="panel-note">Click a marker to load a station.</p>
+              <button id="maximize-map" class="map-expand-button" type="button">Maximize map</button>
+            </div>
+          </div>
+          <div id="station-map" class="station-map" role="img" aria-label="Map of available stations"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-top">
+            <div>
+              <p class="panel-label">Selected site</p>
+              <h2 id="selected-station-title">Station details</h2>
+            </div>
+          </div>
+          <div id="selected-station-meta" class="metric-grid compact-grid"></div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-top">
+          <div>
+            <p class="panel-label">Current readings</p>
+            <h2 id="station-summary-title">Latest station summary</h2>
+          </div>
+        </div>
+        <div id="station-summary" class="metric-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-top">
+          <div>
+            <p class="panel-label">Trend chart</p>
+            <h2 id="chart-title">Recent conditions</h2>
+          </div>
+          <div class="controls">
+            <div class="picker-wrap picker-wrap-compact">
+              <label class="picker-label" for="variable-picker">Variables</label>
+              <select id="variable-picker" class="station-picker" aria-label="Select a variable"></select>
+            </div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div id="trend-chart" class="trend-chart" role="img" aria-label="Station trend chart"></div>
+        </div>
+        <div class="panel-top percentile-block">
+          <div>
+            <p class="panel-label">Percentiles</p>
+            <h3 id="percentile-title">Selected day percentile context</h3>
+          </div>
+        </div>
+        <div id="percentile-scale-summary" class="percentile-scale-summary"></div>
+        <div id="percentile-scale" class="percentile-scale-wrap"></div>
+        <div id="station-percentiles" class="metric-grid compact-grid"></div>
+      </section>
+
+      <section id="multi-axis-beta-panel" class="panel multi-axis-beta-panel is-hidden">
+        <div class="panel-top">
+          <div>
+            <p class="panel-label">Beta chart</p>
+            <h2 id="multi-axis-beta-title">Multi-axis station view</h2>
+          </div>
+          <p id="multi-axis-beta-note" class="panel-note multi-axis-beta-note">
+            This beta keeps several variables on the same time axis with separate y-axes. Choose variables below, then use the Plotly legend to toggle traces on and off.
+          </p>
+        </div>
+        <div class="multi-axis-beta-controls-wrap">
+          <div>
+            <label class="picker-label" for="multi-axis-beta-controls">Variables on chart</label>
+            <div id="multi-axis-beta-controls" class="multi-axis-beta-controls" role="group" aria-label="Select variables for multi-axis chart"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div id="multi-axis-beta-chart" class="trend-chart multi-axis-beta-chart" role="img" aria-label="Beta multi-axis station trend chart"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="map-modal" class="map-modal" aria-hidden="true">
+    <div class="map-modal-backdrop" data-close-map-modal="true"></div>
+    <div class="map-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="map-modal-title">
+      <div class="map-modal-header">
+        <div>
+          <p class="panel-label">Expanded map</p>
+          <h2 id="map-modal-title">Explore station map</h2>
+        </div>
+        <button id="close-map-modal" class="map-close-button" type="button" aria-label="Close expanded map">Close</button>
+      </div>
+      <div id="station-map-modal" class="station-map station-map-modal" role="img" aria-label="Expanded map of available stations"></div>
+    </div>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script src="assets/app.js" defer></script>
+</body>
+</html>

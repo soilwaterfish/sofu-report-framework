@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOFU Workflow Guide</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body data-page="docs" data-build="BUILD_VERSION">
+  <div class="site-shell">
+    <nav class="topbar compact">
+      <a class="brand" href="index.html">SOFU Report</a>
+      <div class="topbar-links">
+        <a href="dashboard.html">Dashboard</a>
+        <a href="reports.html">Reports</a>
+        <a class="active" href="docs.html">Docs</a>
+        <a href="about.html">About</a>
+      </div>
+    </nav>
+
+    <main class="content-grid single-column docs-layout">
+      <section class="page-header">
+        <p class="eyebrow">Workflow Guide</p>
+        <h1>Build, run, inspect</h1>
+        <p class="lead">
+          This page is a quick reference for the `Makefile` commands so it is easier to separate
+          raw ingest, database refresh, percentile refresh, and static-site issues while iterating.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span>Normal path</span>
+            <strong>Fast daily run</strong>
+            <span>Use Docker for the real workflow run, but keep the cron path focused on ingest, daily stats, indices, and site export.</span>
+          </article>
+          <article class="metric-card">
+            <span>Debug path</span>
+            <strong>DB and site split</strong>
+            <span>Use the local helpers when you need to inspect the SQLite DB or rebuild just the static export from an already-updated database.</span>
+          </article>
+          <article class="metric-card">
+            <span>Main idea</span>
+            <strong>One stage at a time</strong>
+            <span>Separate ingest, daily stats, percentiles, and website export so each layer can be verified on its own.</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Commands</p>
+        <h2>Makefile reference</h2>
+        <div class="docs-table-wrap">
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>High-level purpose</th>
+                <th>When to use it</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>make docker-build</code></td>
+                <td>Builds the <code>sofureport-job</code> Docker image only.</td>
+                <td>Use after changing the Dockerfile, package dependencies, or anything container-specific.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run</code></td>
+                <td>Runs the default Docker workflow path.</td>
+                <td>Use when you want the normal scheduled-style run: ingest, daily stats, computed indices, and static-site build. Percentiles are skipped by default.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-build</code></td>
+                <td>Builds the image and then runs the full workflow.</td>
+                <td>Use when you changed code and want to be sure the run is using a fresh container image.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-no-site</code></td>
+                <td>Runs the default DB workflow but skips the static-site build.</td>
+                <td>Use when you want to check whether ingest, daily stats, and computed indices are working without mixing in frontend/export behavior.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-ingest</code></td>
+                <td>Runs only the raw API ingest and SQLite merge steps.</td>
+                <td>Use when you want the fastest possible check that APIs are returning data and the database is accepting new rows. By default this uses recent windows for Synoptic and FEMS, while Zentra still repairs missing water-year windows.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-daily</code></td>
+                <td>Runs the fast daily DB path and skips the site build.</td>
+                <td>Use when you want to refresh raw data, daily stats, and computed indices without paying the percentile cost.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-percentiles</code></td>
+                <td>Runs only the percentile refresh against the current daily stats tables.</td>
+                <td>Use for occasional heavy refreshes after the raw data and daily stats are already in good shape.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-full</code></td>
+                <td>Runs ingest, daily stats, computed indices, percentiles, and static-site build.</td>
+                <td>Use when you explicitly want the heavyweight everything-refresh path.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-run-backfill</code></td>
+                <td>Runs a water-year repair pass for the raw APIs without rebuilding the site.</td>
+                <td>Use when cron was down or you suspect a larger gap in Synoptic/FEMS/Zentra raw data and want to refill it before rebuilding anything else.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-up-web</code></td>
+                <td>Starts the nginx web service.</td>
+                <td>Use when you want to serve whatever is currently in <code>output/</code> locally.</td>
+              </tr>
+              <tr>
+                <td><code>make docker-down-web</code></td>
+                <td>Stops the nginx web service.</td>
+                <td>Use when you are done serving the local static site or want to reset the web layer.</td>
+              </tr>
+              <tr>
+                <td><code>make build-site-local</code></td>
+                <td>Runs <code>build_static_site.R</code> on the host using the current local DB.</td>
+                <td>Use when the DB looks correct and you want to test whether the website export is stale or misbuilt.</td>
+              </tr>
+              <tr>
+                <td><code>make db-qc</code></td>
+                <td>Runs the SQLite QA/QC checks.</td>
+                <td>Use when you want a pass/fail validation of required tables, duplicates, station lookup integrity, and freshness.</td>
+              </tr>
+              <tr>
+                <td><code>make db-inspect</code></td>
+                <td>Prints a human-readable snapshot of the current DB state.</td>
+                <td>Use when you want to see latest timestamps, sample labels, and flagged stale stations before rebuilding anything else.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Workflow patterns</p>
+        <h2>Recommended sequences</h2>
+
+        <details class="docs-toggle" open>
+          <summary>Daily cron-style run</summary>
+          <div class="docs-code-wrap">
+            <pre><code>make docker-build
+make docker-run
+make docker-up-web</code></pre>
+          </div>
+          <p class="docs-note">
+            This is the best normal path now. It keeps the environment aligned with the deployed workflow while avoiding the percentile refresh on every run.
+          </p>
+          <p class="docs-note">
+            Current defaults: Synoptic fetches the last 3 days, FEMS fetches the last 7 days, daily stats refresh only the last 14 days, and percentile refresh is off in the daily path.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Fast API-to-DB check</summary>
+          <div class="docs-code-wrap">
+            <pre><code>make docker-run-ingest
+make db-inspect
+make db-qc</code></pre>
+          </div>
+          <p class="docs-note">
+            Use this when you suspect the workflow is not writing the right raw data into <code>data/sofu.sqlite</code> and you do not want stats or percentiles obscuring the issue.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Recover a missed window after downtime</summary>
+          <div class="docs-code-wrap">
+            <pre><code>make docker-run-backfill
+make db-inspect
+make build-site-local</code></pre>
+          </div>
+          <p class="docs-note">
+            Use this when you had a cron interruption or another outage and need a heavier raw-data repair pass before rebuilding the site.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Refresh daily DB products without percentiles</summary>
+          <div class="docs-code-wrap">
+            <pre><code>make docker-run-daily
+make db-inspect
+make db-qc</code></pre>
+          </div>
+          <p class="docs-note">
+            Use this when the APIs look healthy and you want the fast operational path: raw ingest, daily min/max/mean tables, and computed indices.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Run percentiles on their own cadence</summary>
+          <div class="docs-code-wrap">
+            <pre><code>make docker-run-percentiles
+make build-site-local
+make docker-up-web</code></pre>
+          </div>
+          <p class="docs-note">
+            Use this when you want to refresh the heavy percentile tables separately, for example seasonally or after a larger backfill.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Rebuild just the website export</summary>
+          <div class="docs-code-wrap">
+            <pre><code>make build-site-local
+make docker-up-web</code></pre>
+          </div>
+          <p class="docs-note">
+            Use this when the DB looks current but the website appears stale. This isolates the static-site layer from the workflow layer.
+          </p>
+        </details>
+
+        <details class="docs-toggle">
+          <summary>Fast debugging mental model</summary>
+          <div class="docs-code-wrap">
+            <pre><code>1. Are the APIs ingesting into SQLite?
+2. Are daily stats and computed indices current?
+3. Do percentiles need a separate refresh?
+4. Does the static export reflect the DB?
+5. Is nginx serving the latest output?</code></pre>
+          </div>
+          <p class="docs-note">
+            If you answer those in order, most issues get narrowed down quickly instead of bleeding across multiple layers.
+          </p>
+        </details>
+      </section>
+
+      <section class="info-card">
+        <p class="section-label">Layer map</p>
+        <h2>What each command touches</h2>
+        <ul class="feature-list">
+          <li><code>docker-run-ingest</code> is about API calls and raw table merges only.</li>
+          <li><code>docker-run</code>, <code>docker-run-daily</code>, and <code>docker-run-no-site</code> are about the fast operational DB path.</li>
+          <li><code>docker-run-percentiles</code> and <code>docker-run-full</code> are the heavyweight refresh commands.</li>
+          <li><code>db-inspect</code> and <code>db-qc</code> are about the SQLite database only.</li>
+          <li><code>build-site-local</code> is about turning the current DB into static JSON/HTML for the website.</li>
+          <li><code>docker-up-web</code> and <code>docker-down-web</code> are only about serving the already-generated files.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

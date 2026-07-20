@@ -1,0 +1,21 @@
+# Local credentials. Commit only the placeholder template.
+/secrets/*
+!/secrets/.Renviron.example
+/.env
+
+# Runtime state and generated site artifacts.
+/data/*
+/output/
+/logs/
+/tmp_site/
+/_targets/
+
+# SQLite database files, including write-ahead-log sidecars.
+*.sqlite
+*.sqlite-*
+
+# Local R/editor state.
+.Rhistory
+.RData
+.Rproj.user/
+.vscode/
