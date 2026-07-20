@@ -1,0 +1,3 @@
+[submodule "sofureport"]
+	path = sofureport
+	url = git@github.com:soilwaterfish/sofureport.git
