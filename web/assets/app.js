@@ -25,6 +25,8 @@ const state = {
   data: null,
   stationId: null,
   metric: "soil_moisture_1",
+  chartWindow: "365",
+  percentileDay: "today",
   multiAxisMetrics: [],
   map: null,
   markers: new Map(),
@@ -105,6 +107,15 @@ function metricAsOf(station, metricKey, fallbackText = "Latest reading") {
     return `As of ${formatTimestamp(timestamp)}`;
   }
   return fallbackText;
+}
+
+function latestObservationTimestamp(station) {
+  const keys = ["soil_moisture_1", "soil_moisture_2", "air_temp", "humidity",
+    "wind_speed", "precip_accum"];
+  const timestamps = keys.map((key) => station.latest_dates?.[key])
+    .filter((value) => value && Number.isFinite(Date.parse(value)));
+  return timestamps.sort((a, b) => Date.parse(b) - Date.parse(a))[0]
+    || station.latest.timestamp;
 }
 
 function localDateKey(timestamp) {
@@ -532,7 +543,64 @@ function renderMultiAxisControls(station) {
 
 function filteredSeries(station) {
   if (!station || !station.series.length) return [];
-  return station.series;
+  const [start, end] = chartDateRange();
+  return station.series.filter(point => localDateKey(point.timestamp) >= start.slice(0, 10) && localDateKey(point.timestamp) <= end.slice(0, 10));
+}
+
+function chartDateRange() {
+  const today = window.SofuRates.dayKey(state.data?.generated_at || Date.now());
+  const end = `${today}T23:59:59`;
+  let start;
+  if (state.chartWindow === "wy") {
+    start = `${Number(today.slice(0, 4)) - (today.slice(5) < "10-01" ? 1 : 0)}-10-01`;
+  } else {
+    const date = new Date(`${today}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() - Number(state.chartWindow));
+    start = date.toISOString().slice(0, 10);
+  }
+  return [`${start}T00:00:00`, end];
+}
+
+function waterYearKey(timestamp) {
+  const date = localDateKey(timestamp);
+  return Number(date.slice(0, 4)) + (date.slice(5) >= "10-01" ? 1 : 0);
+}
+
+function addWaterYearBreaks(series, key) {
+  if (key !== "precip_cumulative") return series;
+  const points = [];
+  series.forEach((point, index) => {
+    if (index && waterYearKey(point.timestamp) !== waterYearKey(series[index - 1].timestamp)) {
+      points.push({ timestamp: point.timestamp, resolution: point.resolution,
+        [key]: null, [`${key}_min`]: null, [`${key}_max`]: null });
+    }
+    points.push(point);
+  });
+  return points;
+}
+
+function provisionalPercentiles(station) {
+  const key = state.metric;
+  const today = window.SofuRates.dayKey(Date.now());
+  const ref = station.today_reference?.[key];
+  if (!ref || ref.local_date !== today) return null;
+  const snap = window.SofuRates.snapshot(station.current_report, key);
+  const context = { ...ref, provisional: true, observed_at: snap?.isToday ? snap.timestamp : null };
+  const precipitation = key === "precip_accum" || key === "precip_cumulative";
+  for (const [field, stat] of [["value_min", "min"], ["value_mean", "mean"], ["value_max", "max"]]) {
+    if (!ref[field]) continue;
+    let value = snap?.isToday ? snap[stat] : null;
+    if (precipitation) {
+      if (field !== "value_mean") { delete context[field]; continue; }
+      value = snap?.isToday ? snap.total : null;
+      if (key === "precip_cumulative" && value !== null && today.slice(5) !== "10-01") {
+        const prior = station.series.filter(point => point.resolution === "daily" && localDateKey(point.timestamp) < today && waterYearKey(point.timestamp) === waterYearKey(today) && point.precip_cumulative != null).at(-1);
+        value = prior ? Number(prior.precip_cumulative) + value : null;
+      }
+    }
+    context[field] = { ...ref[field], current: value };
+  }
+  return context;
 }
 
 function fillDailyDateGaps(dailySeries, metricKey) {
@@ -589,7 +657,7 @@ function renderSelectedStationMeta(station) {
   const variableLabels = availableMetricLabels(station);
   target.append(
     createMetricCard("Station ID", station.id, station.api ?? "API source unavailable"),
-    createMetricCard("Latest update", formatTimestamp(station.latest.timestamp), "Most recent observation"),
+    createMetricCard("Latest update", formatTimestamp(latestObservationTimestamp(station)), "Most recent observation"),
     createMetricCard(
       "Coordinates",
       hasMapCoords(station)
@@ -736,14 +804,23 @@ function buildPercentileRibbonTrace(points, lowerKey, upperKey, color, name, alp
 
   if (!validPoints.length) return null;
 
+  const groups = [];
+  for (const point of validPoints) {
+    const previous = groups.at(-1);
+    if (!previous || (state.metric === "precip_cumulative" && waterYearKey(previous[0].timestamp) !== waterYearKey(point.timestamp))) groups.push([point]);
+    else previous.push(point);
+  }
+  const ribbonX = [], ribbonY = [];
+  for (const group of groups) {
+    ribbonX.push(...group.map(point => localDateKey(point.timestamp)), ...group.map(point => localDateKey(point.timestamp)).reverse(), null);
+    ribbonY.push(...group.map(point => Number(point[upperKey])), ...group.map(point => Number(point[lowerKey])).reverse(), null);
+  }
   return {
     x: [
-      ...validPoints.map((point) => localDateKey(point.timestamp)),
-      ...validPoints.map((point) => localDateKey(point.timestamp)).reverse()
+      ...ribbonX
     ],
     y: [
-      ...validPoints.map((point) => Number(point[upperKey])),
-      ...validPoints.map((point) => Number(point[lowerKey])).reverse()
+      ...ribbonY
     ],
     type: "scatter",
     mode: "lines",
@@ -768,11 +845,11 @@ function renderPercentiles(station) {
   if (!target || !station) return;
 
   const metric = metricConfig[state.metric];
-  const metricPercentiles = station.percentiles?.[state.metric];
+  const metricPercentiles = state.percentileDay === "today" ? provisionalPercentiles(station) : station.percentiles?.[state.metric];
 
   if (title) {
     title.textContent = metricPercentiles
-      ? `${metric.label} percentile context for ${metricPercentiles.local_date}`
+      ? `${metric.label} percentile context for ${metricPercentiles.local_date}${metricPercentiles.provisional ? " · today so far, provisional" : " · completed day"}`
       : `${metric.label} percentile context`;
   }
 
@@ -817,7 +894,7 @@ function renderPercentiles(station) {
   if (scaleSummary && activeBand && scaleStat?.current !== null && scaleStat?.current !== undefined) {
     scaleSummary.innerHTML = `
       <div class="percentile-summary-card ${activeBand.className}">
-        <span class="percentile-summary-label">${percentileSummaryLabel(state.metric, scaleStatKey)}</span>
+        <span class="percentile-summary-label">${metricPercentiles.provisional ? "Provisional · " : ""}${percentileSummaryLabel(state.metric, scaleStatKey)}</span>
         <strong>${formatValue(scaleStat.current, 2)} ${metric.unit}</strong>
         <span class="percentile-summary-text">${activeBand.note} · ${activeBand.label} percentile band</span>
       </div>
@@ -827,18 +904,18 @@ function renderPercentiles(station) {
   const cards = [];
 
   if (metricPercentiles.value_min) {
-    cards.push(createPercentileCard("Daily min", metricPercentiles.value_min));
+    cards.push(createPercentileCard(metricPercentiles.provisional ? "Today sampled min" : "Daily min", metricPercentiles.value_min));
   }
 
   if (metricPercentiles.value_mean) {
     cards.push(createPercentileCard(
-      state.metric === "precip_cumulative" ? "Accumulated precip" : "Daily mean",
+      state.metric === "precip_cumulative" ? "Water-year precipitation" : state.metric === "precip_accum" ? "Daily precipitation" : metricPercentiles.provisional ? "Today sampled mean" : "Daily mean",
       metricPercentiles.value_mean
     ));
   }
 
   if (metricPercentiles.value_max) {
-    cards.push(createPercentileCard("Daily max", metricPercentiles.value_max));
+    cards.push(createPercentileCard(metricPercentiles.provisional ? "Today sampled max" : "Daily max", metricPercentiles.value_max));
   }
 
   cards.push(
@@ -1033,8 +1110,10 @@ function renderChart(station) {
     return;
   }
 
-  const recentSeries = series.filter((point) => point.resolution !== "daily");
-  const dailySeries = fillDailyDateGaps(series.filter((point) => point.resolution === "daily"), state.metric);
+  const recentSeries = series.filter((point) => point.resolution !== "daily" && Date.parse(point.timestamp) <= Date.now());
+  const dailySeries = addWaterYearBreaks(fillDailyDateGaps(series.filter((point) => point.resolution === "daily"), state.metric), state.metric);
+  const coverage = document.getElementById("chart-coverage-note");
+  if (coverage) coverage.textContent = `${series.filter(point => point.resolution === "daily").length} observed daily records · missing dates remain gaps`;
   const traces = [];
   const percentileSeries = station.percentile_series?.[state.metric] ?? [];
 
@@ -1131,7 +1210,7 @@ function renderChart(station) {
   }
 
   const recentTrace = {
-    x: recentSeries.map((point) => point.timestamp),
+    x: recentSeries.map((point) => window.SofuRates.wallTime(point.timestamp)),
     y: recentSeries.map((point) => Number(point[state.metric])),
     customdata: recentSeries.map((point) => formatTimestamp(point.timestamp)),
     type: "scatter",
@@ -1157,11 +1236,12 @@ function renderChart(station) {
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(255,255,255,0.15)",
     font: {
-      family: 'Georgia, "Times New Roman", serif',
+      family: '"Segoe UI", sans-serif',
       color: "#1e2a2f"
     },
     xaxis: {
       title: "Time",
+      range: chartDateRange(),
       tickformat: "%b %-d\n%Y",
       gridcolor: "rgba(30,42,47,0.08)",
       zeroline: false
@@ -1198,7 +1278,7 @@ function buildMultiAxisTrace(series, metricKey, station, axisKey) {
   }
 
   return {
-    x: series.map((point) => point.timestamp),
+    x: series.map((point) => window.SofuRates.wallTime(point.timestamp)),
     y,
     customdata: series.map((point) => formatTimestamp(point.timestamp)),
     type: "scatter",
@@ -1224,7 +1304,7 @@ function buildMetricTimeline(station, metricKey) {
 
   const recentSeries = series.filter((point) => point.resolution !== "daily");
   if (!recentSeries.length) {
-    return series;
+    return addWaterYearBreaks(series, metricKey);
   }
 
   const recentStart = recentSeries[0].timestamp;
@@ -1232,7 +1312,7 @@ function buildMetricTimeline(station, metricKey) {
     (point) => point.resolution === "daily" && point.timestamp < recentStart
   );
 
-  return [...dailyBeforeRecent, ...recentSeries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  return addWaterYearBreaks([...dailyBeforeRecent, ...recentSeries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)), metricKey);
 }
 
 function buildMultiAxisLayout(selectedMetrics) {
@@ -1259,7 +1339,7 @@ function buildMultiAxisLayout(selectedMetrics) {
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(255,255,255,0.15)",
     font: {
-      family: 'Georgia, "Times New Roman", serif',
+      family: '"Segoe UI", sans-serif',
       color: "#1e2a2f"
     },
     legend: {
@@ -1274,6 +1354,7 @@ function buildMultiAxisLayout(selectedMetrics) {
         0.92 - rightExtraAxes.length * axisStep
       ],
       title: "Time",
+      range: chartDateRange(),
       tickformat: "%b %-d\n%Y",
       gridcolor: "rgba(30,42,47,0.08)",
       zeroline: false
@@ -1385,11 +1466,30 @@ function updateDashboard() {
   renderChart(station);
   renderMultiAxisBeta(station);
   renderPercentiles(station);
+  const requestedMetric = state.metric;
+  window.SofuRates?.render(document.getElementById("station-rolling-report"), station, requestedMetric).then(payload => {
+    if (payload && state.stationId === station.id && state.metric === requestedMetric) {
+      station.current_report = payload;
+      renderPercentiles(station);
+    }
+  });
 }
 
 async function init() {
   const page = document.body.dataset.page;
   if (!["home", "dashboard"].includes(page)) return;
+  document.querySelectorAll("[data-chart-window]").forEach(button => button.addEventListener("click", () => {
+    state.chartWindow = button.dataset.chartWindow;
+    document.querySelectorAll("[data-chart-window]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    const station = getCurrentStation();
+    if (station) { renderChart(station); renderMultiAxisBeta(station); }
+  }));
+  document.querySelectorAll("[data-percentile-day]").forEach(button => button.addEventListener("click", () => {
+    state.percentileDay = button.dataset.percentileDay;
+    document.querySelectorAll("[data-percentile-day]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+    const station = getCurrentStation();
+    if (station) renderPercentiles(station);
+  }));
 
   try {
     await loadData();

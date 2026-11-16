@@ -22,8 +22,6 @@ RUN R -q -e "install.packages('remotes', repos='https://cloud.r-project.org')"
 RUN R -q -e "install.packages('sf', repos='https://cloud.r-project.org')"
 RUN R -q -e "library(sf); print(sf::sf_extSoftVersion())"
 RUN R -q -e "install.packages(c('DBI','RSQLite','dplyr','janitor', 'data.table','rmarkdown', 'gt', 'purrr'), repos='https://cloud.r-project.org')"
-RUN R -q -e "remotes::install_local('/app/sofureport', dependencies = TRUE, upgrade = 'never')"
-
 WORKDIR /app
 
 COPY sofureport /app/sofureport

@@ -87,7 +87,7 @@ function soilChangeClass(value) {
 }
 
 function formatDatasetValue(datasetKey, value) {
-  if (!datasetKey.startsWith("soil_moisture")) {
+  if (datasetKey === "precip") {
     return formatPrecipValue(value);
   }
 
@@ -95,14 +95,16 @@ function formatDatasetValue(datasetKey, value) {
     return "&ndash;";
   }
 
-  const direction = soilChangeClass(value);
-  const icon = direction === "increase" ? "&uarr;" : direction === "decrease" ? "&darr;" : "&rarr;";
+  const rawDirection = datasetKey === "gsi" && Math.abs(Number(value)) > .005 ? Number(value) > 0 ? "increase" : "decrease" : soilChangeClass(value);
+  let direction = rawDirection;
+  if (datasetKey === "kbdi" && direction !== "stable") direction = direction === "increase" ? "decrease" : "increase";
+  const icon = rawDirection === "increase" ? "&uarr;" : rawDirection === "decrease" ? "&darr;" : "&rarr;";
   return `<span class="report-change report-change-${direction}"><span aria-hidden="true">${icon}</span>${formatSignedValue(value)}</span>`;
 }
 
 function rowDetailMarkup(row, datasetKey, datasetLabel) {
   const totals = row?.totals || {};
-  const label = datasetKey === "precip" ? "Precipitation total" : "Net soil-moisture change";
+  const label = datasetKey === "precip" ? "Precipitation total" : `Net ${datasetLabel.toLowerCase()} change`;
   const stationId = encodeURIComponent(row.station_id || "");
 
   return `
@@ -114,7 +116,7 @@ function rowDetailMarkup(row, datasetKey, datasetLabel) {
       </div>
       <div class="report-detail-values">
         ${["hours_24", "days_2", "days_7", "days_30"].map((key) => `
-          <span><small>${key === "hours_24" ? "24 hr" : key.replace("days_", "") + " day"}</small><strong>${formatDatasetValue(datasetKey, totals[key])}</strong></span>
+          <span><small>${key === "hours_24" ? "24 hr" : key.replace("days_", "") + " day"}</small><strong>${formatDatasetValue(datasetKey, totals[key])}</strong>${window.SofuRates?.rateMarkup(row, key, datasetKey, true) || ""}</span>
         `).join("")}
       </div>
       <div class="report-detail-actions">
@@ -143,7 +145,7 @@ function localDateFromTimestamp(timestamp) {
 function buildReportChartData(series, datasetKey) {
   const metricKey = datasetKey === "precip" ? "precip_accum" : datasetKey;
   const records = (Array.isArray(series) ? series : [])
-    .filter((point) => point?.timestamp && Number.isFinite(Number(point?.[metricKey])));
+    .filter((point) => point?.timestamp && point[metricKey] != null && Number.isFinite(Number(point[metricKey])));
   if (!records.length) return [];
 
   const newestDate = localDateFromTimestamp(records[records.length - 1].timestamp);
@@ -239,7 +241,22 @@ async function renderSelectedStationChart(slot, row, datasetKey, datasetLabel) {
   if (!chartSlot) return;
 
   try {
+    if (datasetKey !== "precip" && window.SofuRates) {
+      try {
+        const current = await window.SofuRates.load(row.station_id);
+        if (!chartSlot.isConnected) return;
+        const snap = window.SofuRates.snapshot(current, datasetKey);
+        const todayMarkup = snap ? `<div class="today-observations"><span class="panel-label">${snap.isToday ? "Today so far · provisional" : `Latest observed day · ${escapeHtml(snap.day)}`}</span><strong>Latest ${formatPrecipValue(snap.latest)}</strong><span>Minimum ${formatPrecipValue(snap.min)} · Mean ${formatPrecipValue(snap.mean)} · Maximum ${formatPrecipValue(snap.max)} · ${snap.samples} readings</span><small>${escapeHtml(formatReportTimestamp(snap.timestamp))}</small></div>` : "";
+        chartSlot.innerHTML = `${todayMarkup}<div class="report-chart-heading"><span>Hourly observations · Mountain time</span><strong>${escapeHtml(datasetLabel)}</strong></div>
+          <label>Observation window <select data-report-chart-window><option value="24">24 hour</option><option value="48">2 day</option><option value="168">7 day</option><option value="720" selected>30 day</option></select></label><div class="rates-observation-chart"></div>`;
+        const plot = chartSlot.querySelector(".rates-observation-chart");
+        window.SofuRates.renderPlot(plot, current, datasetKey);
+        chartSlot.querySelector("[data-report-chart-window]").addEventListener("change", event => window.SofuRates.renderPlot(plot, current, datasetKey, Number(event.target.value)));
+        return;
+      } catch { /* Older exports retain their existing daily detail chart. */ }
+    }
     const station = await loadStationSeries(row.station_id);
+    if (!chartSlot.isConnected) return;
     const points = buildReportChartData(station.series, datasetKey);
     if (!points.length) {
       chartSlot.innerHTML = `<p class="report-chart-empty">No usable 30-day ${escapeHtml(datasetLabel.toLowerCase())} series is available for this station.</p>`;
@@ -409,9 +426,39 @@ function renderZoneReport(data) {
     }
   };
 
+  for (const [key, label, unit] of [["air_temp", "Air temperature", "F"], ["humidity", "Humidity", "percentage points"], ["wind_speed", "Wind speed", "mph"], ["gsi", "GSI", "GSI units"], ["kbdi", "KBDI", "KBDI units"]]) {
+    datasets[key] = { label, panelLabel: "Weather & fire indices", title: `${label} changes by station`,
+      note: `Net changes in ${unit}. Fitted rates describe the direction across the window; they can differ from endpoint changes.`, data: zone[key] || {} };
+  }
+
+  let searchText = "";
+  let currentOnly = false;
+  let sortKey = "station_name";
+  let ascending = true;
+  let selectedStationId = null;
+
+  function filteredReportRows(dataset) {
+    return (dataset.data?.rows || []).filter(row =>
+      (!currentOnly || row.freshness_status === "current") &&
+      `${row.station_id} ${row.station_name} ${row.api}`.toLowerCase().includes(searchText)
+    ).slice().sort((left, right) => {
+      const a = sortKey.startsWith("days_") || sortKey === "hours_24" ? left.totals?.[sortKey] : left[sortKey];
+      const b = sortKey.startsWith("days_") || sortKey === "hours_24" ? right.totals?.[sortKey] : right[sortKey];
+      if (a == null && b == null) return 0;
+      if (a == null) return 1;
+      if (b == null) return -1;
+      const comparison = typeof a === "number" ? a - b : String(a).localeCompare(String(b));
+      return (ascending ? comparison : -comparison) || String(left.station_id).localeCompare(String(right.station_id));
+    });
+  }
+
+  function sortHeader(key, label) {
+    return `<th aria-sort="${sortKey === key ? ascending ? "ascending" : "descending" : "none"}"><button class="report-sort-button" data-report-sort="${key}" type="button">${label} ${sortKey === key ? ascending ? "↑" : "↓" : "↕"}</button></th>`;
+  }
+
   function renderDatasetTable(datasetKey) {
     const dataset = datasets[datasetKey] || datasets.precip;
-    const rows = Array.isArray(dataset.data?.rows) ? dataset.data.rows : [];
+    const rows = filteredReportRows(dataset);
     const summary = dataset.data?.summary || {};
     const valueFormatter = (value) => formatDatasetValue(datasetKey, value);
 
@@ -419,16 +466,13 @@ function renderZoneReport(data) {
       ? rows
           .map(
             (row) => `
-              <tr class="report-data-row ${row.freshness_status === "stale" ? "report-row-stale" : ""}" data-report-row="${escapeHtml(row.station_id)}" tabindex="0" aria-label="Show details for ${escapeHtml(row.station_name || row.station_id)}">
+              <tr class="report-data-row ${row.freshness_status === "stale" ? "report-row-stale" : ""}" data-report-row="${escapeHtml(row.station_id)}" tabindex="0" aria-expanded="false" aria-label="Show details for ${escapeHtml(row.station_name || row.station_id)}">
                 <td>${escapeHtml(row.station_id)}</td>
                 <td>${escapeHtml(row.station_name)}</td>
                 <td>${escapeHtml(row.info || row.api || "")}</td>
                 <td>${escapeHtml(formatReportTimestamp(rowTimestampLabel(row)))}</td>
                 <td>${escapeHtml(formatFreshnessStatus(row.freshness_status, row.days_stale))}</td>
-                <td>${valueFormatter(row.totals?.hours_24)}</td>
-                <td>${valueFormatter(row.totals?.days_2)}</td>
-                <td>${valueFormatter(row.totals?.days_7)}</td>
-                <td>${valueFormatter(row.totals?.days_30)}</td>
+                ${["hours_24", "days_2", "days_7", "days_30"].map(key => `<td>${valueFormatter(row.totals?.[key])}${window.SofuRates?.rateMarkup(row, key, datasetKey) || ""}</td>`).join("")}
               </tr>
             `
           )
@@ -471,19 +515,20 @@ function renderZoneReport(data) {
         </div>
         <p class="panel-note">${escapeHtml(dataset.note)}</p>
       </div>
+      <p class="panel-note" role="status">${rows.length} of ${dataset.data?.rows?.length || 0} stations shown. Zone summary statistics below describe all stations. ${datasetKey === "precip" ? "Rates show average accumulation in inches/day." : "Fitted rates include their variable-specific units."} Rates require 80% hourly coverage and span; low-fit trends are labeled variable.</p>
       <div class="report-table-wrap">
         <table class="report-table report-precip-table">
           <thead>
             <tr>
-              <th>Station ID</th>
-              <th>Station</th>
+              ${sortHeader("station_id", "Station ID")}
+              ${sortHeader("station_name", "Station")}
               <th>Info</th>
               <th>As of</th>
               <th>Status</th>
-              <th>24 hour</th>
-              <th>2 day</th>
-              <th>7 day</th>
-              <th>30 day</th>
+              ${sortHeader("hours_24", "24 hour")}
+              ${sortHeader("days_2", "2 day")}
+              ${sortHeader("days_7", "7 day")}
+              ${sortHeader("days_30", "30 day")}
             </tr>
           </thead>
           <tbody>
@@ -492,7 +537,6 @@ function renderZoneReport(data) {
           </tbody>
         </table>
       </div>
-      <div class="report-detail-slot" aria-live="polite"></div>
     `;
   }
 
@@ -512,7 +556,7 @@ function renderZoneReport(data) {
     <section class="page-header">
       <p class="eyebrow">Zone Report</p>
       <h1>${escapeHtml(zone.label)}</h1>
-      <p class="lead">Rolling precipitation totals built from the latest available station records rather than waiting on the completed daily stats cycle.</p>
+      <p class="lead">Compare precipitation, soil moisture, weather, and fire-index changes from the latest station observations. Select a station for hourly detail and today’s sampled conditions.</p>
       <div class="hero-actions">
         <a class="button button-secondary" href="reports.html">Back to reports</a>
         <a class="button button-secondary" href="dashboard.html">Open dashboard</a>
@@ -533,6 +577,7 @@ function renderZoneReport(data) {
       <div class="report-tab-row" id="report-tab-row">
         ${renderTabButtons("precip")}
       </div>
+      <div class="report-filter-bar"><label>Find a station<input id="report-search" type="search" placeholder="Station name, ID, or network"></label><label class="report-current-filter"><input id="report-current-only" type="checkbox">Current stations only</label></div>
       <div id="report-dataset-panel">
         ${renderDatasetTable("precip")}
       </div>
@@ -543,18 +588,56 @@ function renderZoneReport(data) {
   const datasetPanel = document.getElementById("report-dataset-panel");
   let currentDatasetKey = "precip";
 
-  function showRowDetail(row) {
+  function refreshTable() {
+    if (typeof Plotly !== "undefined") datasetPanel.querySelectorAll(".js-plotly-plot").forEach(plot => Plotly.purge(plot));
+    datasetPanel.innerHTML = renderDatasetTable(currentDatasetKey);
+    if (selectedStationId) {
+      const row = filteredReportRows(datasets[currentDatasetKey]).find(entry => String(entry.station_id) === selectedStationId);
+      if (row) showRowDetail(row, false);
+      else selectedStationId = null;
+    }
+  }
+  document.getElementById("report-search").addEventListener("input", event => {
+    searchText = event.target.value.trim().toLowerCase();
+    refreshTable();
+  });
+  document.getElementById("report-current-only").addEventListener("change", event => {
+    currentOnly = event.target.checked;
+    refreshTable();
+  });
+
+  function showRowDetail(row, toggle = true) {
     const dataset = datasets[currentDatasetKey] || datasets.precip;
-    const slot = datasetPanel.querySelector(".report-detail-slot");
-    if (!slot) return;
-    slot.innerHTML = `${rowDetailMarkup(row, currentDatasetKey, dataset.label)}<section class="report-detail-chart-slot" aria-live="polite"><span class="report-chart-loading">Loading 30-day chart&hellip;</span></section>`;
-    datasetPanel.querySelectorAll("[data-report-row]").forEach((tableRow) => {
-      tableRow.classList.toggle("is-selected", tableRow.dataset.reportRow === String(row.station_id));
+    datasetPanel.querySelectorAll(".report-detail-table-row").forEach(detail => {
+      if (typeof Plotly !== "undefined") detail.querySelectorAll(".js-plotly-plot").forEach(plot => Plotly.purge(plot));
+      detail.remove();
     });
+    const id = String(row.station_id);
+    selectedStationId = toggle && selectedStationId === id ? null : id;
+    let selectedRow = null;
+    datasetPanel.querySelectorAll("[data-report-row]").forEach((tableRow) => {
+      const selected = tableRow.dataset.reportRow === selectedStationId;
+      tableRow.classList.toggle("is-selected", selected);
+      tableRow.setAttribute("aria-expanded", String(selected));
+      if (selected) selectedRow = tableRow;
+    });
+    if (!selectedRow) return;
+    const detailRow = document.createElement("tr");
+    detailRow.className = "report-detail-table-row";
+    detailRow.innerHTML = `<td colspan="9"><div class="report-detail-inline" aria-live="polite">${rowDetailMarkup(row, currentDatasetKey, dataset.label)}<section class="report-detail-chart-slot"><span class="report-chart-loading">Loading 30-day chart&hellip;</span></section></div></td>`;
+    selectedRow.after(detailRow);
+    const slot = detailRow.querySelector(".report-detail-inline");
     renderSelectedStationChart(slot, row, currentDatasetKey, dataset.label);
   }
 
   datasetPanel.addEventListener("click", (event) => {
+    const sort = event.target.closest("[data-report-sort]");
+    if (sort) {
+      ascending = sortKey === sort.dataset.reportSort ? !ascending : false;
+      sortKey = sort.dataset.reportSort;
+      refreshTable();
+      return;
+    }
     const tableRow = event.target.closest("[data-report-row]");
     if (!tableRow) return;
     const dataset = datasets[currentDatasetKey] || datasets.precip;
@@ -589,8 +672,9 @@ function renderZoneReport(data) {
     }
 
     currentDatasetKey = datasetKey;
+    selectedStationId = null;
     setActiveTab(currentDatasetKey);
-    datasetPanel.innerHTML = renderDatasetTable(datasetKey);
+    refreshTable();
   });
 }
 

@@ -26,14 +26,14 @@ db_path <- resolve_first_existing(c(
 ))
 
 output_dir <- Sys.getenv("SOFU_OUTPUT_DIR", unset = NA_character_)
-output_path <- resolve_first_existing(
-  c(
-    Sys.getenv("SOFU_REPORTS_JSON_PATH", unset = NA_character_),
-    if (!is.na(output_dir) && nzchar(output_dir)) file.path(output_dir, "latest", "data", "reports.json") else NA_character_,
+output_path <- Sys.getenv("SOFU_REPORTS_JSON_PATH", unset = "")
+if (!nzchar(output_path)) {
+  output_path <- if (!is.na(output_dir) && nzchar(output_dir)) {
+    file.path(output_dir, "latest", "data", "reports.json")
+  } else {
     "output/latest/data/reports.json"
-  ),
-  create_parent = TRUE
-)
+  }
+}
 
 dir.create(dirname(output_path), recursive = TRUE, showWarnings = FALSE)
 
@@ -130,7 +130,7 @@ row_freshness_from_timestamp <- function(value) {
   list(status = status, days_stale = days_stale)
 }
 
-normalize_report_row <- function(station_row, value_timestamp, totals) {
+normalize_report_row <- function(station_row, value_timestamp, totals, metric_key = "precip_accum") {
   freshness <- row_freshness_from_timestamp(value_timestamp)
   latest_value <- if (!is.na(value_timestamp) && nzchar(as.character(value_timestamp))) {
     as.character(value_timestamp)
@@ -138,7 +138,7 @@ normalize_report_row <- function(station_row, value_timestamp, totals) {
     NA_character_
   }
 
-  list(
+  row <- list(
     station_id = as.character(station_row$station_id[[1]]),
     station_name = as.character(station_row$station_name[[1]]),
     api = as.character(station_row$api[[1]]),
@@ -155,6 +155,13 @@ normalize_report_row <- function(station_row, value_timestamp, totals) {
       days_30 = null_if_na(totals[["d30"]])
     )
   )
+  reference <- station_rate_exports[[row$station_id]]$metrics[[metric_key]]
+  if (!is.null(reference)) {
+    row$rates <- reference$rates
+    row$rate_details <- reference$rate_details
+    row$rate_method <- reference$rate_method
+  }
+  row
 }
 
 compute_cumulative_precip_increments <- function(values) {
@@ -276,10 +283,16 @@ has_any_numeric_totals <- function(row) {
   any(is.finite(totals))
 }
 
-con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+con <- DBI::dbConnect(RSQLite::SQLite(), db_path, flags = RSQLite::SQLITE_RO)
 on.exit(DBI::dbDisconnect(con), add = TRUE)
 
 sites_lookup <- DBI::dbReadTable(con, "sites_in_cg")
+helper_candidates <- c("/app/scripts/station_rates_helpers.R", "scripts/station_rates_helpers.R")
+helper_path <- helper_candidates[file.exists(helper_candidates)][1]
+if (is.na(helper_path)) stop("Could not locate station_rates_helpers.R")
+source(helper_path)
+station_rate_exports <- build_station_rate_exports(con, sites_lookup,
+  file.path(dirname(output_path), "current", "weather"))
 zone_columns <- grep("_zone$", names(sites_lookup), value = TRUE)
 
 raw_zentra_precip <- DBI::dbGetQuery(
@@ -399,7 +412,7 @@ for (zone_column in zone_columns) {
     }
 
     as_of_timestamp <- if (!is.na(soil_windows$latest_timestamp)) soil_windows$latest_timestamp else NA_character_
-    normalize_report_row(station_row, as_of_timestamp, soil_windows$totals)
+    normalize_report_row(station_row, as_of_timestamp, soil_windows$totals, "soil_moisture_1")
   })
 
   soil_rows_sm2 <- lapply(seq_len(nrow(zone_rows)), function(i) {
@@ -421,7 +434,7 @@ for (zone_column in zone_columns) {
     }
 
     as_of_timestamp <- if (!is.na(soil_windows$latest_timestamp)) soil_windows$latest_timestamp else NA_character_
-    normalize_report_row(station_row, as_of_timestamp, soil_windows$totals)
+    normalize_report_row(station_row, as_of_timestamp, soil_windows$totals, "soil_moisture_2")
   })
 
   station_rows <- Filter(has_any_numeric_totals, station_rows)
@@ -482,6 +495,24 @@ for (zone_column in zone_columns) {
   )
 }
 
+for (i in seq_along(zones)) {
+  station_rows <- sites_lookup[is_truthy_zone_flag(sites_lookup[[zones[[i]]$id]]), , drop = FALSE]
+  for (metric in c("air_temp", "humidity", "wind_speed", "gsi", "kbdi")) {
+    rows <- lapply(seq_len(nrow(station_rows)), function(j) {
+      site <- station_rows[j, , drop = FALSE]
+      current <- station_rate_exports[[as.character(site$station_id[[1]])]]$metrics[[metric]]
+      if (is.null(current)) return(NULL)
+      totals <- setNames(current$totals, c("d1", "d2", "d7", "d30"))
+      normalize_report_row(site, current$latest_timestamp, totals, metric)
+    })
+    rows <- Filter(Negate(is.null), rows)
+    summary <- setNames(lapply(c("hours_24", "days_2", "days_7", "days_30"), function(key) {
+      summarize_metric(vapply(rows, function(row) safe_numeric(row$totals[[key]]), numeric(1)))
+    }), c("hours_24", "days_2", "days_7", "days_30"))
+    zones[[i]][[metric]] <- list(rows = rows, summary = summary)
+  }
+}
+
 zones <- zones[order(vapply(zones, function(zone) zone$station_count, integer(1)), decreasing = TRUE)]
 
 payload <- list(
@@ -489,5 +520,7 @@ payload <- list(
   zones = zones
 )
 
-jsonlite::write_json(payload, output_path, auto_unbox = TRUE, pretty = FALSE, na = "null")
+temporary_path <- tempfile(tmpdir = dirname(output_path), fileext = ".json")
+jsonlite::write_json(payload, temporary_path, auto_unbox = TRUE, pretty = FALSE, na = "null")
+if (!file.rename(temporary_path, output_path)) stop("Could not publish reports payload: ", output_path)
 cat("Wrote reports payload to:", output_path, "\n")

@@ -1,4 +1,4 @@
-.PHONY: docker-build docker-run docker-run-build docker-run-no-site docker-run-ingest docker-run-daily docker-run-derived docker-run-percentiles docker-run-full docker-run-backfill docker-run-db-refresh docker-run-db-refresh-build docker-run-source-repair docker-run-may-june-repair docker-run-fems-nfdrs-repair docker-run-fems-establish docker-run-fems-establish-percentiles docker-up-web docker-down-web build-site-local publish-frontend landing-assets landing-publish build-site-with-indices db-qc db-inspect db-eda diagnose-pipeline trace-pipeline targets-manifest targets-ingest targets-daily targets-percentiles targets-workflow targets-site targets-qc
+.PHONY: docker-build docker-run docker-run-build docker-run-no-site docker-run-ingest docker-run-daily docker-run-derived docker-run-percentiles docker-run-full docker-run-backfill docker-run-db-refresh docker-run-db-refresh-build docker-run-source-repair docker-run-may-june-repair docker-run-fems-nfdrs-repair docker-run-fems-establish docker-run-fems-establish-percentiles docker-run-zentra-establish docker-up-web docker-down-web build-site-local publish-frontend landing-assets landing-publish build-site-with-indices db-qc db-inspect db-eda diagnose-pipeline trace-pipeline targets-manifest targets-ingest targets-daily targets-percentiles targets-workflow targets-site targets-qc
 
 docker-build:
 	docker compose build sofureport-job
@@ -28,6 +28,14 @@ docker-run-percentiles:
 
 docker-run-full:
 	docker compose run --rm -e SOFU_STAGE_PERCENTILES=1 -e SOFU_ZENTRA_BACKFILL_DAYS=30 sofureport-job
+
+.PHONY: docker-run-scheduled
+docker-run-scheduled:
+	docker compose run --rm -e SOFU_STAGE_INGEST=1 -e SOFU_STAGE_DAILY_STATS=1 -e SOFU_STAGE_COMPUTED_INDICES=1 -e SOFU_STAGE_PERCENTILES=0 -e SOFU_SKIP_STATIC_SITE=0 -e SOFU_FEMS_SKIP_NFDRS=0 -e SOFU_FEMS_BACKFILL_DAYS=31 -e SOFU_SYNOPTIC_BACKFILL_DAYS=31 -e SOFU_DAILY_STATS_LOOKBACK_DAYS=31 -e SOFU_ZENTRA_BACKFILL_DAYS=30 -e SOFU_BUILD_LANDING_INDICES=1 sofureport-job
+
+.PHONY: docker-run-frequent
+docker-run-frequent:
+	docker compose run --rm -e SOFU_FEMS_BACKFILL_DAYS=2 -e SOFU_SYNOPTIC_BACKFILL_DAYS=2 -e SOFU_ZENTRA_BACKFILL_DAYS=1 -e SOFU_FEMS_SKIP_NFDRS=1 -e SOFU_STAGE_DAILY_STATS=0 -e SOFU_STAGE_COMPUTED_INDICES=0 -e SOFU_STAGE_PERCENTILES=0 -e SOFU_BUILD_LANDING_INDICES=0 sofureport-job
 
 docker-run-backfill:
 	docker compose run --rm -e SOFU_SKIP_STATIC_SITE=1 -e SOFU_FORCE_WATER_YEAR_BACKFILL=1 sofureport-job
@@ -66,11 +74,38 @@ docker-run-fems-establish-percentiles:
 	@test -n "$(STATIONS)" || (echo "Set STATIONS=ID1,ID2" && exit 1)
 	docker compose run --rm -e SOFU_SKIP_STATIC_SITE=1 -e SOFU_STAGE_INGEST=0 -e SOFU_STAGE_DAILY_STATS=0 -e SOFU_STAGE_COMPUTED_INDICES=0 -e SOFU_STAGE_PERCENTILES=1 -e SOFU_ONLY_ESTABLISH_DERIVED=1 -e SOFU_FEMS_ESTABLISH_STATIONS=$(STATIONS) sofureport-job
 
+# One-time historical establishment for comma-separated Zentra device IDs.
+# Only the supplied devices make API requests. Default start is this water year.
+# Example: make docker-run-zentra-establish STATIONS=z6-37801,z6-37082 START_DATE=2025-10-01
+docker-run-zentra-establish:
+	@test -n "$(STATIONS)" || (echo "Set STATIONS=z6-DEVICE1,z6-DEVICE2" && exit 1)
+	docker compose run --rm -e SOFU_SKIP_STATIC_SITE=1 -e SOFU_ZENTRA_ONLY_INGEST=1 -e SOFU_ZENTRA_ESTABLISH_STATIONS=$(STATIONS) -e SOFU_ZENTRA_ESTABLISH_START_DATE=$(or $(START_DATE),2025-10-01) -e SOFU_STAGE_PERCENTILES=1 sofureport-job
+
+.PHONY: docker-run-zentra-audit docker-run-zentra-repair docker-run-zentra-derived
+docker-run-zentra-audit:
+	docker compose run --rm --entrypoint Rscript sofureport-job /app/scripts/repair_zentra.R --audit-only
+
+# Repeated invocations resume uncovered days; completed chunks are already saved.
+docker-run-zentra-repair:
+	flock -n logs/scheduled-refresh.lock docker compose run --rm -e SOFU_ZENTRA_MAX_CHUNKS=$(or $(MAX_CHUNKS),24) -e SOFU_ZENTRA_REPAIR_STATIONS="$(STATIONS)" -e SOFU_ZENTRA_REPAIR_START_DATE="$(START)" -e SOFU_ZENTRA_REPAIR_END_DATE="$(END)" -e SOFU_ZENTRA_REPAIR_CHUNK_DAYS=$(or $(CHUNK_DAYS),2) --entrypoint Rscript sofureport-job /app/scripts/repair_zentra.R --ingest --derive --publish
+
+# Rebuild existing Zentra observations without calling any API.
+docker-run-zentra-derived:
+	flock -n logs/scheduled-refresh.lock docker compose run --rm --entrypoint Rscript sofureport-job /app/scripts/repair_zentra.R --derive --publish
+
 docker-up-web:
 	docker compose up -d sofureport-web
 
 docker-down-web:
 	docker compose stop sofureport-web
+
+.PHONY: preview-frontend preview-rates
+preview-frontend:
+	python3 scripts/preview_frontend.py --port $(or $(PORT),8081)
+
+# Refresh only report/rate JSON for the facelift preview, using existing SQLite.
+preview-rates:
+	SOFU_REPORTS_JSON_PATH=output/facelift/data/reports.json Rscript scripts/build_reports_payload.R
 
 build-site-local:
 	Rscript build_static_site.R

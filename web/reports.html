@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SOFU Reports</title>
   <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body data-page="reports-index" data-build="BUILD_VERSION">
   <div class="site-shell">
     <nav class="topbar compact">
       <a class="brand" href="index.html">SOFU Report</a>
       <div class="topbar-links">
-        <a href="dashboard.html">Dashboard</a>
+        <a href="dashboard.html">Weather &amp; soil</a>
         <a class="active" href="reports.html">Reports</a>
         <a href="docs.html">Docs</a>
         <a href="about.html">About</a>
@@ -24,10 +25,20 @@
         <h1>Zone Report Summaries</h1>
         <p class="lead">
           Zone report summaries are built from the latest available station records. It includes
-          24-hour, 2-day, 7-day, and 30-day precipitation totals and soil moisture gains/losses.
+          24-hour, 2-day, 7-day, and 30-day precipitation totals, soil moisture gains/losses, weather, and fire-index changes.
         </p>
       </section>
 
+      <section class="panel area-browser" aria-labelledby="area-heading">
+        <p class="panel-label">Explore by reporting zone</p><h2 id="area-heading">Choose an area. Open its report.</h2>
+        <p class="panel-note">Explore the same station networks and reporting zones as the home page.</p>
+        <div class="area-layout"><div id="area-map" aria-label="Map of report stations"></div><div class="area-sidebar">
+          <label for="area-select">Reporting zone</label><select id="area-select"><option value="">All stations</option></select>
+          <label for="area-source">Station network</label><select id="area-source"><option value="">All networks</option><option value="FEMS">RAWS / FEMS</option><option value="Synoptic">Synoptic</option><option value="Zentra">Zentra</option></select>
+          <p id="area-status" role="status">Loading station locations...</p><a id="area-report-link" class="button button-primary" href="reports.html">Browse zone reports</a>
+          <div id="area-station-detail" aria-live="polite"></div>
+        </div></div>
+      </section>
       <section class="panel">
         <div class="metric-grid" id="reports-overview">
           <article class="metric-card"><span>Loading</span><strong>…</strong><span>Reading zone summaries</span></article>
@@ -38,6 +49,8 @@
     </main>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="assets/area-browser.js?v=BUILD_VERSION" defer></script>
   <script src="assets/reports.js"></script>
 </body>
 </html>

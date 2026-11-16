@@ -1,0 +1,16 @@
+.git
+**/.git
+secrets
+.env
+**/.Renviron
+data
+output
+logs
+tmp_site
+_targets
+.Rhistory
+.RData
+.Rproj.user
+.vscode
+**/*.sqlite
+**/*.sqlite-*

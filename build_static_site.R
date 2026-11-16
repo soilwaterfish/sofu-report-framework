@@ -56,6 +56,8 @@ db_path <- resolve_first_existing(
     "data/sofu.sqlite"
   ))]
 )
+requested_output <- Sys.getenv("SOFU_OUTPUT_HTML", "")
+if (nzchar(requested_output)) out_html <- requested_output
 site_dir <- dirname(out_html)
 source_dir <- resolve_first_existing(
   c(
@@ -699,15 +701,29 @@ station_record_years <- list(
 )
 
 days_back <- 30
-water_year_start <- as.Date(sprintf("%d-10-01", as.integer(format(Sys.Date(), "%Y")) - 1))
 local_timezone <- "America/Denver"
 local_timezone <- dashboard_timezone
 local_today <- as.Date(format(Sys.time(), tz = local_timezone, usetz = FALSE), tz = local_timezone)
+# The dashboard series and accumulated precipitation both start on the current
+# water-year boundary. After October 1, that boundary belongs to this calendar
+# year; before October it belongs to the prior calendar year.
+water_year_start <- as.Date(sprintf(
+  "%d-10-01",
+  ifelse(
+    as.integer(format(local_today, "%m")) >= 10L,
+    as.integer(format(local_today, "%Y")),
+    as.integer(format(local_today, "%Y")) - 1L
+  )
+))
 today_start_epoch <- as.numeric(as.POSIXct(
   paste(local_today, "00:00:00"),
   tz = local_timezone
 ))
 water_year_start_numeric <- as.numeric(water_year_start)
+chart_series_start <- local_today - 365L
+accumulation_start <- as.Date(sprintf("%d-10-01",
+  as.integer(format(chart_series_start, "%Y")) - as.integer(format(chart_series_start, "%m-%d") < "10-01")))
+stats_query_start_numeric <- as.numeric(accumulation_start) - 1L
 
 stats_metric_maps <- list(
   `Zentra` = c(
@@ -783,11 +799,13 @@ read_stats_export <- function(stats_table, metric_map, api_label) {
       "is_complete_day",
       "FROM %s",
       "WHERE local_date >= %s",
+      "AND local_date < %s",
       "AND metric_name IN (%s)",
       "ORDER BY station_id, local_date, metric_name"
     ),
     stats_table,
-    water_year_start_numeric,
+    stats_query_start_numeric,
+    as.numeric(local_today),
     metric_sql
   )
 
@@ -1036,10 +1054,19 @@ build_daily_series <- function(station_stats, api_label) {
   names(daily_points) <- as.character(day_keys)
   running_precip <- 0
   previous_synoptic_cumulative <- NA_real_
+  previous_water_year <- NA_integer_
 
   for (i in seq_along(day_keys)) {
     day_value <- day_keys[[i]]
+    current_water_year <- water_year_for_date(day_value)
+    if (is.na(previous_water_year) || current_water_year != previous_water_year) running_precip <- 0
+    previous_water_year <- current_water_year
     day_rows <- station_stats[station_stats$local_date == day_value, , drop = FALSE]
+    if (day_value < accumulation_start) {
+      baseline <- day_rows[day_rows$metric_name == "precip_accum_set_1.mean", , drop = FALSE]
+      if (nrow(baseline)) previous_synoptic_cumulative <- safe_numeric(baseline$value_max[[1]])
+      next
+    }
 
     point <- list(
       timestamp = timestamp_for_day(day_value),
@@ -1104,7 +1131,7 @@ build_daily_series <- function(station_stats, api_label) {
     daily_points[[i]] <- point
   }
 
-  unname(daily_points)
+  unname(Filter(function(point) !is.null(point) && as.Date(substr(point$timestamp, 1, 10)) >= chart_series_start, daily_points))
 }
 
 get_station_percentiles <- function(station_id, latest_local_date, api_label, metric_map, latest_daily_point = NULL) {
@@ -1317,6 +1344,163 @@ synoptic_precip_metric_for_station <- function(station_id) {
   NULL
 }
 
+# `precip_accum_set_1.mean` is a running source counter, not a daily rain
+# amount. The dashboard chart already converts it to a daily increment; use
+# the same endpoint-difference rule for its historical percentile reference.
+synoptic_fems_precip_daily_totals <- function(station_id) {
+  metric_name <- synoptic_precip_metric_for_station(station_id)
+  if (is.null(metric_name) || !DBI::dbExistsTable(con, "synoptic_fems_daily_stats")) {
+    return(data.frame())
+  }
+
+  rows <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      paste(
+        "SELECT local_date, value_min, value_mean, value_max, is_complete_day",
+        "FROM synoptic_fems_daily_stats",
+        "WHERE station_id = %s AND metric_name = %s"
+      ),
+      DBI::dbQuoteString(con, station_id),
+      DBI::dbQuoteString(con, metric_name)
+    )
+  )
+
+  if (!nrow(rows)) {
+    return(data.frame())
+  }
+
+  rows$local_date <- as.Date(as.numeric(rows$local_date), origin = "1970-01-01")
+  rows <- rows[rows$is_complete_day == 1 | rows$is_complete_day == TRUE, , drop = FALSE]
+  rows <- rows[order(rows$local_date), , drop = FALSE]
+  if (!nrow(rows)) {
+    return(data.frame())
+  }
+
+  if (identical(metric_name, "precip_accum_set_1.mean")) {
+    raw_min <- as.numeric(rows$value_min)
+    raw_max <- as.numeric(rows$value_max)
+    daily_total <- rep(NA_real_, nrow(rows))
+
+    for (idx in seq_len(nrow(rows))) {
+      current_max <- raw_max[[idx]]
+      previous_max <- if (idx > 1L) raw_max[[idx - 1L]] else NA_real_
+
+      if (is.na(current_max)) {
+        next
+      }
+      if (idx == 1L) {
+        daily_total[[idx]] <- if (!is.na(raw_min[[idx]])) max(current_max - raw_min[[idx]], 0) else 0
+      } else if (!is.na(previous_max) && current_max >= previous_max) {
+        daily_total[[idx]] <- current_max - previous_max
+      } else {
+        # A source counter reset starts a new accumulation interval.
+        daily_total[[idx]] <- current_max
+      }
+    }
+  } else if (identical(metric_name, "precip_accum_one_hour_set_1.mean")) {
+    daily_total <- as.numeric(rows$value_mean)
+  } else {
+    daily_total <- as.numeric(rows$value_max)
+  }
+
+  data.frame(
+    local_date = rows$local_date,
+    daily_total = daily_total,
+    stringsAsFactors = FALSE
+  )
+}
+
+precip_percentile_summary <- function(values, current_value, local_date) {
+  values <- as.numeric(values)
+  values <- values[is.finite(values)]
+  if (!length(values)) {
+    return(NULL)
+  }
+
+  quantiles <- stats::quantile(
+    values,
+    probs = c(0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95),
+    na.rm = TRUE,
+    names = FALSE,
+    type = 7
+  )
+  summary <- list(
+    current = null_if_na(current_value),
+    p05 = null_if_na(quantiles[[1]]),
+    p10 = null_if_na(quantiles[[2]]),
+    p25 = null_if_na(quantiles[[3]]),
+    p50 = null_if_na(quantiles[[4]]),
+    p75 = null_if_na(quantiles[[5]]),
+    p90 = null_if_na(quantiles[[6]]),
+    p95 = null_if_na(quantiles[[7]])
+  )
+
+  list(
+    local_date = as.character(local_date),
+    day_of_year_key = format(local_date, "%m-%d"),
+    n_years = length(values),
+    value_min = summary,
+    value_mean = summary,
+    value_max = summary
+  )
+}
+
+get_synoptic_precip_accum_percentiles <- function(station_id, latest_local_date, current_value = NA_real_) {
+  if (is.na(latest_local_date)) {
+    return(NULL)
+  }
+
+  precip_rows <- synoptic_fems_precip_daily_totals(station_id)
+  if (!nrow(precip_rows)) {
+    return(NULL)
+  }
+
+  target_key <- format(latest_local_date, "%m-%d")
+  precip_percentile_summary(
+    values = precip_rows$daily_total[format(precip_rows$local_date, "%m-%d") == target_key],
+    current_value = current_value,
+    local_date = latest_local_date
+  )
+}
+
+get_synoptic_precip_accum_percentile_series <- function(station_id, daily_series) {
+  precip_rows <- synoptic_fems_precip_daily_totals(station_id)
+  if (!nrow(precip_rows) || !length(daily_series)) {
+    return(NULL)
+  }
+
+  values_by_day <- split(precip_rows$daily_total, format(precip_rows$local_date, "%m-%d"))
+  metric_points <- list()
+
+  for (point in daily_series) {
+    point_date <- as.Date(substr(point$timestamp, 1, 10))
+    values <- values_by_day[[format(point_date, "%m-%d")]]
+    if (is.null(values)) {
+      next
+    }
+
+    summary <- precip_percentile_summary(values, current_value = NA_real_, local_date = point_date)
+    if (is.null(summary)) {
+      next
+    }
+
+    metric_points[[length(metric_points) + 1L]] <- list(
+      timestamp = point$timestamp,
+      n_years = summary$n_years,
+      p05 = summary$value_mean$p05,
+      p10 = summary$value_mean$p10,
+      p25 = summary$value_mean$p25,
+      p50 = summary$value_mean$p50,
+      p75 = summary$value_mean$p75,
+      p90 = summary$value_mean$p90,
+      p95 = summary$value_mean$p95
+    )
+  }
+
+  if (!length(metric_points)) NULL else metric_points
+}
+
 get_accumulated_precip_percentiles <- function(station_id, latest_local_date, api_label, current_value = NA_real_, has_wims = FALSE) {
   if (is.null(latest_local_date) || length(latest_local_date) == 0 || is.na(latest_local_date)) {
     return(NULL)
@@ -1335,7 +1519,7 @@ get_accumulated_precip_percentiles <- function(station_id, latest_local_date, ap
 
   precip_query <- sprintf(
     paste(
-      "SELECT local_date, value_mean, value_max, n_obs, is_complete_day",
+      "SELECT local_date, value_min, value_mean, value_max, n_obs, is_complete_day",
       "FROM %s",
       "WHERE station_id = %s",
       "AND metric_name = %s"
@@ -1588,7 +1772,8 @@ build_hourly_overlay <- function(station_hourly, api_label, display_api = api_la
   running_cumulative <- ifelse(is.na(prior_cumulative), 0, prior_cumulative)
   synoptic_day_baseline <- NA_real_
 
-  lapply(seq_len(nrow(station_hourly)), function(i) {
+  points <- vector("list", nrow(station_hourly))
+  for (i in seq_len(nrow(station_hourly))) {
     row <- station_hourly[i, , drop = FALSE]
     display_epoch <- as.numeric(row$date[[1]])
     point <- list(
@@ -1602,7 +1787,9 @@ build_hourly_overlay <- function(station_hourly, api_label, display_api = api_la
     )
 
     if ("precip_24h" %in% names(row) || "precip_accum_wims" %in% names(row) || "precip_hourly" %in% names(row)) {
-      point$precip_accum <- if ("precip_accum_wims" %in% names(row) && !is.na(row$precip_accum_wims[[1]])) {
+      point$precip_accum <- if ("precip_hourly" %in% names(row) && !is.na(row$precip_hourly[[1]])) {
+        safe_numeric(row$precip_hourly[[1]])
+      } else if ("precip_accum_wims" %in% names(row) && !is.na(row$precip_accum_wims[[1]])) {
         raw_value <- safe_numeric(row$precip_accum_wims[[1]])
         if (is.na(raw_value)) {
           NA
@@ -1643,6 +1830,7 @@ build_hourly_overlay <- function(station_hourly, api_label, display_api = api_la
 
     if (api_label == "Zentra" && "precip_increment" %in% names(row)) {
       increment <- safe_numeric(row$precip_increment[[1]])
+      point$precip_accum <- null_if_na(increment)
       if (!is.na(increment)) {
         running_cumulative <- running_cumulative + increment
       }
@@ -1650,14 +1838,20 @@ build_hourly_overlay <- function(station_hourly, api_label, display_api = api_la
     } else if (api_label == "Synoptic/FEMS") {
       precip_amount <- safe_numeric(point$precip_accum)
       if (!is.na(precip_amount)) {
-        point$precip_cumulative <- running_cumulative + precip_amount
+        if ("precip_hourly" %in% names(row) && !is.na(row$precip_hourly[[1]])) {
+          running_cumulative <- running_cumulative + precip_amount
+          point$precip_cumulative <- running_cumulative
+        } else {
+          point$precip_cumulative <- running_cumulative + precip_amount
+        }
       } else if (!is.na(running_cumulative) && running_cumulative != 0) {
         point$precip_cumulative <- running_cumulative
       }
     }
 
-    point
-  })
+    points[[i]] <- point
+  }
+  points
 }
 
 value_on_or_before <- function(series, metric_key, cutoff_date) {
@@ -1755,6 +1949,24 @@ latest_daily_value_for_metric <- function(daily_series, metric_key, target_date 
   value
 }
 
+latest_observation_timestamp <- function(daily_series, hourly_series) {
+  sensor_keys <- c("soil_moisture_1", "soil_moisture_2", "air_temp", "humidity",
+    "wind_speed", "precip_accum", "precip_increment")
+  for (points in list(hourly_series, daily_series)) {
+    for (idx in rev(seq_along(points))) {
+      point <- points[[idx]]
+      present <- vapply(sensor_keys, function(key) {
+        value <- point[[key]]
+        length(value) == 1L && is.numeric(value) && is.finite(value)
+      }, logical(1))
+      if (any(present)) return(point$timestamp)
+    }
+  }
+  # Index-only stations retain their reporting timestamp, not a fabricated shift.
+  points <- if (length(hourly_series)) hourly_series else daily_series
+  if (length(points)) tail(points, 1)[[1]]$timestamp else NA_character_
+}
+
 build_station_payload <- function(station_id, station_stats, station_hourly, fallback_api, display_api = fallback_api, fallback_name = NULL, wims_id = NULL) {
   meta <- build_station_meta(
     station_id = station_id,
@@ -1765,7 +1977,7 @@ build_station_payload <- function(station_id, station_stats, station_hourly, fal
   has_wims <- !is.null(wims_id) && !is.na(wims_id) && nzchar(as.character(wims_id))
 
   daily_series <- build_daily_series(station_stats, api_label = fallback_api)
-  prior_cumulative <- if (length(daily_series)) safe_numeric(daily_series[[length(daily_series)]]$precip_cumulative) else NA_real_
+  prior_cumulative <- if (length(daily_series) && water_year_for_date(as.Date(substr(tail(daily_series, 1)[[1]]$timestamp, 1, 10))) == water_year_for_date(local_today)) safe_numeric(tail(daily_series, 1)[[1]]$precip_cumulative) else 0
   hourly_series <- build_hourly_overlay(
     station_hourly,
     api_label = fallback_api,
@@ -1774,13 +1986,7 @@ build_station_payload <- function(station_id, station_stats, station_hourly, fal
   )
   full_series <- c(daily_series, hourly_series)
 
-  latest_timestamp <- if (length(hourly_series)) {
-    hourly_series[[length(hourly_series)]]$timestamp
-  } else if (length(daily_series)) {
-    daily_series[[length(daily_series)]]$timestamp
-  } else {
-    NA_character_
-  }
+  latest_timestamp <- latest_observation_timestamp(daily_series, hourly_series)
 
   complete_station_stats <- station_stats[station_stats$is_complete_day %in% c(TRUE, 1), , drop = FALSE]
   latest_local_date <- if (nrow(complete_station_stats)) {
@@ -1814,6 +2020,17 @@ build_station_payload <- function(station_id, station_stats, station_hourly, fal
     latest_daily_point = latest_daily_point
   )
 
+  if (identical(fallback_api, "Synoptic/FEMS")) {
+    daily_precip_percentiles <- get_synoptic_precip_accum_percentiles(
+      station_id = station_id,
+      latest_local_date = latest_local_date,
+      current_value = if (is.null(latest_daily_point)) NA_real_ else safe_numeric(latest_daily_point$precip_accum)
+    )
+    if (!is.null(daily_precip_percentiles)) {
+      station_percentiles$precip_accum <- daily_precip_percentiles
+    }
+  }
+
   accumulated_precip_percentiles <- get_accumulated_precip_percentiles(
     station_id = station_id,
     latest_local_date = latest_local_date,
@@ -1832,6 +2049,16 @@ build_station_payload <- function(station_id, station_stats, station_hourly, fal
     api_label = fallback_api,
     metric_map = stats_metric_maps[[fallback_api]]
   )
+
+  if (identical(fallback_api, "Synoptic/FEMS")) {
+    daily_precip_percentile_series <- get_synoptic_precip_accum_percentile_series(
+      station_id = station_id,
+      daily_series = daily_series
+    )
+    if (!is.null(daily_precip_percentile_series)) {
+      percentile_series$precip_accum <- daily_precip_percentile_series
+    }
+  }
 
   accumulated_precip_percentile_series <- get_accumulated_precip_percentile_series(
     station_id = station_id,
@@ -1913,6 +2140,14 @@ build_station_payload <- function(station_id, station_stats, station_hourly, fal
     }
   }
 
+  today_reference <- get_station_percentiles(station_id, local_today, fallback_api,
+    stats_metric_maps[[fallback_api]], latest_daily_point = NULL)
+  if (identical(fallback_api, "Synoptic/FEMS")) {
+    today_reference$precip_accum <- get_synoptic_precip_accum_percentiles(station_id, local_today)
+  }
+  today_reference$precip_cumulative <- get_accumulated_precip_percentiles(station_id,
+    local_today, fallback_api, current_value = NA_real_, has_wims = has_wims)
+
   list(
     id = meta$id,
     name = meta$name,
@@ -1924,6 +2159,7 @@ build_station_payload <- function(station_id, station_stats, station_hourly, fal
     latest = latest,
     latest_dates = latest_dates,
     percentiles = station_percentiles,
+    today_reference = today_reference,
     percentile_series = percentile_series,
     series = full_series
   )
@@ -2302,8 +2538,8 @@ zone_reports <- zone_reports[order(vapply(zone_reports, function(report) report$
 
 payload <- list(
   generated_at = format_iso_mountain(as.numeric(Sys.time())),
-  date_window_days = as.integer(Sys.Date() - water_year_start),
-  date_window_start = as.character(water_year_start),
+  date_window_days = 365L,
+  date_window_start = as.character(chart_series_start),
   overview = list(
     station_count = length(stations_for_dashboard),
     last_timestamp = max(latest_timestamps),
@@ -2353,6 +2589,7 @@ if (!length(reports_payload_script)) {
 reports_build_output <- system2(
   command = file.path(R.home("bin"), "Rscript"),
   args = c(reports_payload_script[[1]]),
+  env = paste0("SOFU_REPORTS_JSON_PATH=", shQuote(file.path(data_dir, "reports.json"))),
   stdout = TRUE,
   stderr = TRUE
 )

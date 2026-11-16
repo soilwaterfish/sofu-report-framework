@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SOFU Report</title>
   <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body data-page="home" data-build="BUILD_VERSION">
   <div class="site-shell">
@@ -12,7 +13,7 @@
       <nav class="topbar">
         <a class="brand" href="index.html">SOFU Report</a>
         <div class="topbar-links">
-          <a href="dashboard.html">Dashboard</a>
+          <a href="dashboard.html">Weather &amp; soil</a>
           <a href="reports.html">Reports</a>
           <a href="docs.html">Docs</a>
           <a href="about.html">About</a>
@@ -21,10 +22,10 @@
 
       <div class="hero-grid">
         <section class="hero-copy">
-          <p class="eyebrow">Static-first monitoring site</p>
-          <h1>Welcome to the soil moisture field briefing.</h1>
+          <p class="eyebrow">SOFU field conditions</p>
+          <h1>Know the ground.<br>Watch what changes.</h1>
           <p class="lead">
-            This site brings in data from multi sources to provide a quick analysis on fire/fuels related variables.
+            Explore soil moisture, precipitation, and fire-weather indices across the reporting area. Start with a station or compare conditions across a zone.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="dashboard.html">Open dashboard</a>
@@ -35,9 +36,9 @@
 
         <aside class="hero-panel landing-note">
           <p class="panel-label">Regional conditions</p>
-          <h2>Watch drought signals move through the field area.</h2>
+          <h2>A closer look at local conditions.</h2>
           <p>
-            ForDRI and EDDI frames are cropped to the SOFU reporting boundary and published as static map assets.
+            Station observations from RAWS, Synoptic, and Zentra, with historical percentile context and regional drought outlooks.
           </p>
           <p class="landing-updated" data-landing-generated>Loading the most recent map sequence...</p>
         </aside>
@@ -45,6 +46,29 @@
     </header>
 
     <main class="landing-main">
+      <section class="panel area-browser" aria-labelledby="area-heading">
+        <p class="panel-label">Explore the reporting area</p>
+        <h2 id="area-heading">Choose a zone. Find a station.</h2>
+        <p class="panel-note">Select a marker for station details, or open a zone report to compare precipitation and soil moisture.</p>
+        <div class="area-layout">
+          <div id="area-map" aria-label="Map of SOFU monitoring stations"></div>
+          <div class="area-sidebar">
+            <label for="area-select">Reporting zone</label>
+            <select id="area-select"><option value="">All stations</option></select>
+            <label for="area-source">Station network</label>
+            <select id="area-source"><option value="">All networks</option><option value="FEMS">RAWS / FEMS</option><option value="Synoptic">Synoptic</option><option value="Zentra">Zentra</option></select>
+            <p id="area-status" role="status">Loading station locations...</p>
+            <a id="area-report-link" class="button button-primary" href="reports.html">Browse zone reports</a>
+            <div id="area-station-detail" aria-live="polite"><p class="panel-note">Select a station on the map to explore its available observations.</p></div>
+          </div>
+        </div>
+      </section>
+      <section class="home-destinations" aria-label="Explore SOFU">
+        <a class="panel" href="dashboard.html"><p class="panel-label">Station observations</p><h2>Soil &amp; weather</h2><p>Inspect readings, compare variables, and explore historical percentile bands.</p><span>Open dashboard &rarr;</span></a>
+        <a class="panel" href="reports.html"><p class="panel-label">Zone comparisons</p><h2>Field reports</h2><p>Compare precipitation totals and soil moisture gains and losses across stations.</p><span>Browse reports &rarr;</span></a>
+        <a class="panel" href="#drought-outlooks"><p class="panel-label">Regional context</p><h2>Drought outlooks</h2><p>Play through ForDRI and EDDI maps to see conditions change over time.</p><span>Explore maps &darr;</span></a>
+      </section>
+      <div id="drought-outlooks"><p class="panel-label">Regional context</p><h2>Drought signals over time</h2></div>
       <section class="landing-index-grid" data-landing-index-grid aria-live="polite">
         <article class="landing-index-empty panel">
           <p class="panel-label">Drought outlooks</p>
@@ -56,6 +80,7 @@
   </div>
 
   <script src="assets/landing.js" defer></script>
-  <script src="assets/app.js" defer></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="assets/area-browser.js?v=BUILD_VERSION" defer></script>
 </body>
 </html>

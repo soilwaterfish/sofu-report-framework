@@ -60,6 +60,41 @@ Dashboard and report/table generator
 
 ### Future frontend delivery goal
 
+The `sofureport-facelift` frontend adopts the Kootenai project's compact
+blue/teal styling and map-led navigation using SOFU's existing station catalog
+and zone reports. AI synopsis calls and hydrology sections are excluded.
+The home page zone filter shows stations with precipitation or soil-moisture
+rows in that zone's existing report payload; "All stations" includes the full
+exported station catalog. It does not imply new boundary assignments.
+`make preview-frontend` serves working `web/` files on localhost:8081 while
+reading data and raster frames from `output/latest`, without publishing edits
+or running ingestion, statistics, or API requests. Frontend changes remain
+unpublished until the usual frontend or site publishing command is run.
+
+Rolling-rate exports are additive: the reports builder reads at most 31 days
+of canonical raw observations per active station and writes
+`data/current/weather/<station_id>.json`. It also adds `rates`, `rate_details`,
+and `rate_method` to existing report rows. SQLite is opened read-only. Hourly
+bins have equal weight. Non-precipitation rates use a linear fit; precipitation
+uses observed interval accumulation divided by window duration. Both require
+80% hourly coverage and span. Windows end at the latest valid reading of that
+variable, whose timestamp remains visible. Fitted rates with R-squared below
+0.60 are labeled variable. Daily-only GSI/KBDI may lack hourly rate coverage.
+Soil-moisture and humidity changes use percentage points, not relative percent.
+The rolling observation chart preserves the selected precipitation mode:
+daily precipitation shows interval bars; accumulated precipitation shows the
+running sum of observed hourly increments within the selected window. It is
+not a water-year total (the lower historical chart provides that). Duplicate
+hourly instants count once, missing intervals remain gaps, and no daily or
+cumulative counter is summed again. Rolling-total cards and rate definitions
+remain unchanged.
+`make preview-rates` writes these exports under `output/facelift/data`; the
+frontend preview uses that overlay before `output/latest/data`. Refresh the
+overlay with that command when new DB observations should enter the preview.
+The standard static build generates rate files alongside its report payload.
+An explicit `SOFU_REPORTS_JSON_PATH` is an output destination and must be
+honored even when the target file does not exist yet.
+
 The current dashboard exports a single `data/dashboard.json` payload that is
 approximately 33 MB and renders the full map/chart experience on page load.
 This is acceptable for the current static deployment. Do not change that
@@ -138,6 +173,41 @@ color scaling. The bins are centered on the standardized index value of zero:
 exceptional drought through exceptionally moist at half-index increments, with
 the outer drought/moist classes beyond -2 and +2 respectively. The source
 GeoTIFF's `-9999` sentinel is treated as NoData before rendering.
+
+The normal containerized static-site build refreshes the landing-page ForDRI
+and EDDI assets. A source outage or source lag must retain the most recently
+published valid frame sequence and must not fail the database or site build.
+
+Dashboard history defaults to the rolling 365-day window ending on the build
+date in America/Denver. Read daily statistics from the October 1 preceding that
+window (plus a counter baseline day) before trimming the exported series.
+Accumulated precipitation resets for each water year, including when the
+October 1 observation is missing, and the UI breaks accumulation traces and
+historical ribbons at the boundary. Do not sum only the visible dates to obtain
+a water-year total. Stored daily-stat history remains unchanged.
+
+Today-so-far min/mean/max are sampled from canonical hourly observations in
+the local Mountain calendar day and explicitly labeled provisional. They use
+today's historical daily-stat reference, exported separately as
+`today_reference`, and never replace completed-day SQLite statistics. Missing
+today readings remain unavailable; stale readings must not be labeled today.
+Users can switch to the latest completed-day percentile view.
+
+SOFU scheduled jobs share `logs/scheduled-refresh.lock`. Light refreshes run at
+minute 15 every two hours outside the 06:15 and 18:15 Mountain full-maintenance
+slots. Light runs use a two-day FEMS/Synoptic overlap and one-day Zentra window,
+skip NFDRS, daily statistics, computed indices, historical percentiles and raster
+downloads, and rebuild the static exports. Full maintenance runs refresh a
+31-day FEMS/Synoptic overlap, budgeted historical Zentra gaps, recent daily statistics and
+computed indices, and raster/site assets. Historical percentile maintenance is
+still explicit (`docker-run-percentiles` or `docker-run-full`). No AI synopsis
+or water/hydrology refreshes are included. The cron installer backs up the
+existing crontab and preserves other projects' entries.
+
+For Synoptic/FEMS stations, `precip_accum_set_1.mean` is a source running
+counter. User-facing daily precipitation and its percentile bands must use
+differences between consecutive complete-day counter endpoints, never raw
+counter values. The raw field remains preserved in SQLite for provenance.
 
 Each normalized record should retain enough provenance to identify:
 
@@ -299,6 +369,85 @@ Therefore:
 
 ### Required ingestion behavior
 
+The Zentra recovery engine lives in `sofureport/R/zentra_recovery.R`. Normal
+full runs audit the rolling 365-day display horizon plus its preceding October
+1 baseline, rather than clamping gaps to the current water year or 30 days.
+Frequent runs audit the last three completed Mountain days plus today. This
+overlap rechecks even previously populated days for delayed cellular uploads.
+Days with missing hourly keys or missing
+values in previously supported fields are candidates; a single row does not
+prove that a day is complete. Field expectations begin at the first stored
+non-missing observation; expected hours account for 23/25-hour Mountain days.
+
+`zentra_recovery_state` is additive, keyed by `(station_id, local_date)`.
+Canonical raw/derived keys are unchanged. Full scheduled runs group up to seven
+adjacent local days with explicit POSIX instants, reducing the requests needed
+for long communication gaps. `SOFU_ZENTRA_CHUNK_DAYS` overrides this (1-31).
+Frequent runs group the
+four-day recent overlap into one window per device, so the five-window budget
+still reaches all five active devices instead of spending it on old overlap
+days while omitting today's readings. Historical chunks extend
+backward from the newest candidate, matching newest-first queue order; otherwise
+the queue degenerates into one-day requests. Each chunk upserts only its returned
+hourly keys, coalesces valid old measurements over incoming NAs, and commits
+the retry checkpoint in the same transaction. Duplicate unchanged values do
+not cause raw writes or mark statistics dirty. An interrupted later request
+cannot lose earlier committed chunks. Ingestion is bounded by
+`SOFU_ZENTRA_MAX_CHUNKS` (5 frequent / 12 scheduled by default).
+
+Empty/error/unchanged windows remain retryable: the four-day recent overlap cools down for
+two hours, older ones for 24 hours. Successful changes become eligible again
+after an hour if gaps remain. Recent windows run first, then least-recently
+attempted historical candidates, so an offline device cannot monopolize every
+run. HTTP 401 fails the workflow immediately with an actionable credential
+error; it must never become an empty successful fetch. HTTP 403/404/422 stop
+further requests for that device in the current run. Retry-After, including
+HTTP-date headers, takes precedence over the exponential retry delay.
+Repeated pagination tokens fail rather than looping forever.
+Query endpoints are serialized in UTC with equal offsets, even when the
+requested local-day window crosses DST; stored instants and Mountain-day
+aggregation do not change. Among equally attempted candidates, newer gaps
+run before older gaps so bounded repairs prioritize recent missing periods.
+
+Dirty dates widen dependent daily-stat/percentile refreshes even when the
+repaired date is outside the usual statistics lookback. Scheduled full runs
+refresh affected Zentra percentile keys before clearing the dirty flags.
+Numeric SQLite daily dates must be converted from epoch days to Unix seconds
+before `strftime` selects affected month/day keys.
+
+`make docker-run-zentra-audit` writes gap/latest reports without fetching.
+`make docker-run-zentra-repair MAX_CHUNKS=24` performs bounded resumable API
+recovery, derives statistics, and republishes under the scheduled-job lock.
+`make docker-run-zentra-derived` does only the latter steps without API calls.
+The standalone repair rebuilds derived products on a scratch database,
+validates unique keys, and publishes the active stations' stats/percentiles
+together in one transaction, retaining existing live indexes. It saves a
+pre-repair derived-table backup under `output/zentra-repair/`.
+
+Do not edit a bind-mounted R entry script while its `Rscript` process is running:
+the interpreter can encounter changed source later in the run. If ingestion
+committed but later derivation/publication failed, use the derived-only target;
+do not discard committed observations or re-fetch their API windows.
+
+Targeted repairs accept `STATIONS`, `START`, `END`, and `CHUNK_DAYS` on the Make
+repair target. Dates bound ingestion inclusively, and station filtering also
+scopes derived-table publication. Existing checkpoints and cooldowns remain in
+force. Larger contiguous windows (up to 31 days) reduce requests but still page
+at UTC month boundaries. An empty response never closes a gap permanently.
+
+The renewed token was verified on November 10, 2026. The earlier HTTP 401 was
+caused by updating the secret in a different project folder. This deployment
+mounts only its own `secrets/.Renviron`; branches share that ignored file, but
+separate clones do not.
+
+Future ingestion option: v5 reading-ID paging (`since_reading_id`) is documented
+to capture late uploads independently of measurement time. It is not enabled:
+adoption needs a per-device durable cursor, a raw-reading store keyed by
+device/reading/series, full-hour recomputation across pages, and cursor commits
+atomic with source writes. Do not simply attach a cursor to hourly averages:
+splitting an hour across pages would replace a complete average with a partial
+one. See https://docs.zentracloud.io/l/en/article/pep98lcz1h-get-device-readings.
+
 Maintain ingestion state per source station, not only per source.
 
 The state should distinguish:
@@ -428,21 +577,25 @@ the historical FEMS cumulative counter is differenced within each water year
 to retain the full period of record. The running accumulation resets at the
 water-year boundary; it must not be interpreted as one all-time counter.
 
-FEMS stores `observation_time` in UTC and supplies `observation_time_lst` for
-the local civil-time representation. The current FEMS API timestamp defect is
-six hours ahead of the station time; dashboard serialization applies the
-configurable `SOFU_FEMS_DISPLAY_OFFSET_HOURS=-6` correction only to FEMS
-stations. SQLite raw timestamps and mixed-source daily products remain
-unchanged until a provenance-safe historical migration is completed. Do not
-apply this correction to Synoptic or Zentra observations.
+FEMS weather timestamps follow the ingestion-boundary contract above:
+`SOFU_FEMS_CLOCK_OFFSET_HOURS` normalizes the known weather source-clock defect
+before canonical hourly storage. The old serializer-only
+`SOFU_FEMS_DISPLAY_OFFSET_HOURS` workaround is obsolete; do not reintroduce it.
+NFDRS reporting timestamps remain separate and do not receive that weather
+correction. Dashboard station "Latest update" selects the latest hourly row
+with actual weather/soil measurements, not a later index-only GSI/KBDI row or
+a carried-forward precipitation total. Zero rainfall is a valid measurement.
+If hourly observations are unavailable, use the latest measured daily summary;
+stations containing only indices retain their index reporting timestamp.
+Per-variable report timestamps continue to identify that variable's reading.
 
 FEMS may also return the remainder of a local day before those observations
 have occurred. Ingestion therefore retains reported FEMS rows only through
 `current_time + SOFU_FEMS_FUTURE_GUARD_HOURS` (default `6`) and removes older
 future-looking FEMS rows during the same transactional merge. This guard is
-paired with the display offset: it prevents the newest displayed FEMS record
-from being later than the actual station time without changing Synoptic or
-Zentra timestamps.
+an ingestion safeguard, not permission to shift displayed timestamps. Do not
+change this allowance or canonical source times as part of a card-label fix;
+Synoptic and Zentra timestamps are unaffected.
 
 The FEMS GraphQL response may return optional weather fields as `null`. Those
 fields must be normalized to `NA` per record before row binding; a null

@@ -26,6 +26,9 @@ services:
       SOFU_STAGE_PERCENTILES: "0"
       SOFU_DAILY_STATS_LOOKBACK_DAYS: "14"
       SOFU_PERCENTILES_LOOKBACK_DAYS: "30"
+      # Daily static-site builds refresh ForDRI/EDDI; a source failure keeps
+      # the last good frame sequence rather than failing the site publish.
+      SOFU_BUILD_LANDING_INDICES: "1"
     command: Rscript /app/run_workflow.R
 
   sofureport-web:
